@@ -3,6 +3,7 @@ Delaware Basin Property Evaluator
 Main Streamlit entry point.
 """
 
+import io
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -23,8 +24,8 @@ from config import (
 def _cached_fit_wells(section_wells_json: str, section_prod_json: str):
     """Cache decline curve fits — only re-runs when section changes."""
     from engineering.decline import fit_all_section_wells
-    sw = pd.read_json(section_wells_json, orient="split")
-    sp = pd.read_json(section_prod_json, orient="split")
+    sw = pd.read_json(io.StringIO(section_wells_json), orient="split")
+    sp = pd.read_json(io.StringIO(section_prod_json), orient="split")
     # Re-parse dates after JSON round-trip
     for col in ["first_prod_date", "spud_date"]:
         if col in sw.columns:
@@ -44,8 +45,8 @@ def _cached_type_curve(
 ):
     """Cache type curve per formation + filter settings."""
     from engineering.type_curve import get_offset_wells, build_type_curve
-    wells_df = pd.read_json(wells_json, orient="split")
-    prod_df  = pd.read_json(prod_json,  orient="split")
+    wells_df = pd.read_json(io.StringIO(wells_json), orient="split")
+    prod_df  = pd.read_json(io.StringIO(prod_json),  orient="split")
     for col in ["first_prod_date", "spud_date"]:
         if col in wells_df.columns:
             wells_df[col] = pd.to_datetime(wells_df[col], errors="coerce")
