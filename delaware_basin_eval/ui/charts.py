@@ -1,0 +1,326 @@
+"""
+All Plotly figure factories.
+Each function returns a plotly Figure that can be passed to st.plotly_chart.
+"""
+
+import plotly.graph_objects as go
+import plotly.express as px
+import pandas as pd
+import numpy as np
+from config import FORMATIONS
+
+# Formation color palette (consistent across all charts)
+FORMATION_COLORS: dict[str, str] = {
+    "Wolfcamp A":      "#1f77b4",
+    "Wolfcamp B":      "#ff7f0e",
+    "Wolfcamp C":      "#2ca02c",
+    "Wolfcamp D":      "#d62728",
+    "3rd Bone Spring": "#9467bd",
+    "2nd Bone Spring": "#8c564b",
+    "1st Bone Spring": "#e377c2",
+    "Delaware Sand":   "#7f7f7f",
+    "Cherry Canyon":   "#bcbd22",
+    "Unknown":         "#17becf",
+}
+
+
+def _formation_color(formation: str) -> str:
+    return FORMATION_COLORS.get(formation, FORMATION_COLORS["Unknown"])
+
+
+# ── Tab 1: Section map ─────────────────────────────────────────────────────
+
+def section_map(
+    section_wells: pd.DataFrame,
+    offset_wells: pd.DataFrame | None = None,
+    polygon_geojson: dict | None = None,
+) -> go.Figure:
+    """
+    Scatter mapbox showing in-section wells colored by formation,
+    offset wells in gray, and optional shapefile boundary.
+    """
+    fig = go.Figure()
+
+    # Offset wells (background layer)
+    if offset_wells is not None and not offset_wells.empty:
+        off = offset_wells.dropna(subset=["latitude", "longitude"])
+        fig.add_trace(go.Scattermapbox(
+            lat=off["latitude"],
+            lon=off["longitude"],
+            mode="markers",
+            marker=dict(size=5, color="lightgray", opacity=0.5),
+            name="Offset wells",
+            hovertemplate=(
+                "<b>%{customdata[0]}</b><br>"
+                "Formation: %{customdata[1]}<br>"
+                "Operator: %{customdata[2]}<extra></extra>"
+            ),
+            customdata=off[["well_name", "formation", "operator"]].fillna("—").values,
+        ))
+
+    # In-section wells colored by formation
+    if not section_wells.empty:
+        sw = section_wells.dropna(subset=["latitude", "longitude"])
+        for formation in sw["formation"].fillna("Unknown").unique():
+            grp = sw[sw["formation"].fillna("Unknown") == formation]
+            fig.add_trace(go.Scattermapbox(
+                lat=grp["latitude"],
+                lon=grp["longitude"],
+                mode="markers",
+                marker=dict(size=9, color=_formation_color(formation)),
+                name=formation,
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "Formation: " + formation + "<br>"
+                    "Lateral: %{customdata[1]:,.0f} ft<br>"
+                    "First Prod: %{customdata[2]}<extra></extra>"
+                ),
+                customdata=grp[["well_name", "lateral_length", "first_prod_date"]].fillna("—").values,
+            ))
+
+    # Shapefile boundary
+    if polygon_geojson:
+        fig.add_trace(go.Scattermapbox(
+            mode="lines",
+            lon=[coord[0] for feature in polygon_geojson["features"]
+                 for coord in feature["geometry"]["coordinates"][0]],
+            lat=[coord[1] for feature in polygon_geojson["features"]
+                 for coord in feature["geometry"]["coordinates"][0]],
+            line=dict(width=2, color="yellow"),
+            name="Section boundary",
+        ))
+
+    # Map center
+    if not section_wells.empty and section_wells[["latitude", "longitude"]].notna().all(axis=1).any():
+        valid = section_wells.dropna(subset=["latitude", "longitude"])
+        center_lat = valid["latitude"].mean()
+        center_lon = valid["longitude"].mean()
+    else:
+        center_lat, center_lon = 31.5, -104.0  # TX Delaware default
+
+    fig.update_layout(
+        mapbox=dict(
+            style="open-street-map",
+            center=dict(lat=center_lat, lon=center_lon),
+            zoom=10,
+        ),
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=500,
+        legend=dict(
+            bgcolor="rgba(0,0,0,0.5)",
+            font=dict(color="white"),
+            x=0.01,
+            y=0.99,
+        ),
+    )
+    return fig
+
+
+# ── Tab 2: Decline curve subplot ───────────────────────────────────────────
+
+def decline_curve_grid(wells_data: list[dict]) -> go.Figure:
+    """
+    wells_data: list of dicts with keys:
+      well_name, actual_months, actual_rates,
+      fit_months, fit_rates, proj_months, proj_rates
+    Returns a subplot grid, 3 columns.
+    """
+    from plotly.subplots import make_subplots
+
+    n = len(wells_data)
+    ncols = min(3, n)
+    nrows = (n + ncols - 1) // ncols
+
+    fig = make_subplots(
+        rows=nrows, cols=ncols,
+        subplot_titles=[w["well_name"] for w in wells_data],
+        shared_xaxes=False, shared_yaxes=False,
+        vertical_spacing=0.12,
+        horizontal_spacing=0.07,
+    )
+
+    for i, w in enumerate(wells_data):
+        row = i // ncols + 1
+        col = i % ncols + 1
+
+        # Actual production
+        fig.add_trace(go.Scatter(
+            x=w["actual_months"], y=w["actual_rates"],
+            mode="markers", marker=dict(size=4, color="steelblue"),
+            name="Actual" if i == 0 else None,
+            showlegend=(i == 0),
+        ), row=row, col=col)
+
+        # Fitted curve
+        if w.get("fit_months") is not None:
+            fig.add_trace(go.Scatter(
+                x=w["fit_months"], y=w["fit_rates"],
+                mode="lines", line=dict(color="orange", width=2),
+                name="Fit" if i == 0 else None,
+                showlegend=(i == 0),
+            ), row=row, col=col)
+
+        # Projection
+        if w.get("proj_months") is not None:
+            fig.add_trace(go.Scatter(
+                x=w["proj_months"], y=w["proj_rates"],
+                mode="lines", line=dict(color="orange", width=1.5, dash="dash"),
+                name="Projection" if i == 0 else None,
+                showlegend=(i == 0),
+            ), row=row, col=col)
+
+    fig.update_yaxes(type="log")
+    fig.update_layout(
+        height=max(300, nrows * 280),
+        title_text="Decline Curves (log scale)",
+        showlegend=True,
+        margin=dict(t=60),
+    )
+    return fig
+
+
+# ── Tab 3: Type curve ──────────────────────────────────────────────────────
+
+def type_curve_chart(
+    offset_traces: list[dict],   # list of {months, rates, well_name}
+    p10: np.ndarray,
+    p50: np.ndarray,
+    p90: np.ndarray,
+    formation: str = "",
+    n_wells: int = 0,
+) -> go.Figure:
+    """
+    Individual normalized offset well traces (faint) + P10/P50/P90 band.
+    X axis = months on production, Y = BOPD / 10,000 ft lateral.
+    """
+    fig = go.Figure()
+    months = np.arange(len(p50))
+
+    # Individual traces
+    for i, t in enumerate(offset_traces):
+        fig.add_trace(go.Scatter(
+            x=t["months"], y=t["rates"],
+            mode="lines",
+            line=dict(color="lightsteelblue", width=1),
+            opacity=0.25,
+            name="Offset wells" if i == 0 else None,
+            showlegend=(i == 0),
+            hoverinfo="skip",
+        ))
+
+    # P90–P10 shaded band
+    fig.add_trace(go.Scatter(
+        x=np.concatenate([months, months[::-1]]),
+        y=np.concatenate([p10, p90[::-1]]),
+        fill="toself",
+        fillcolor="rgba(31,119,180,0.10)",
+        line=dict(color="rgba(255,255,255,0)"),
+        name="P10–P90",
+        hoverinfo="skip",
+    ))
+
+    # P10
+    fig.add_trace(go.Scatter(
+        x=months, y=p10,
+        mode="lines", line=dict(color="rgba(31,119,180,0.5)", width=1.5, dash="dot"),
+        name="P10",
+    ))
+    # P90
+    fig.add_trace(go.Scatter(
+        x=months, y=p90,
+        mode="lines", line=dict(color="rgba(31,119,180,0.5)", width=1.5, dash="dot"),
+        name="P90",
+    ))
+    # P50
+    fig.add_trace(go.Scatter(
+        x=months, y=p50,
+        mode="lines", line=dict(color="steelblue", width=3),
+        name="P50 (type curve)",
+    ))
+
+    fig.update_layout(
+        title=f"Type Curve — {formation} ({n_wells} offset wells, normalized to 10,000 ft)",
+        xaxis_title="Months on Production",
+        yaxis_title="Oil Rate (BOPD / 10,000 ft lateral)",
+        yaxis_type="log",
+        height=420,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=80),
+    )
+    return fig
+
+
+# ── Tab 4: Waterfall chart ─────────────────────────────────────────────────
+
+def npv_waterfall(formation_npvs: dict[str, float], total_existing_npv: float) -> go.Figure:
+    """Stacked waterfall: existing production NPV + undrilled NPV by formation."""
+    labels = ["Existing Production"] + list(formation_npvs.keys()) + ["Total"]
+    values = [total_existing_npv] + list(formation_npvs.values())
+    total  = sum(values)
+
+    measure = ["absolute"] + ["relative"] * len(formation_npvs) + ["total"]
+    text    = [f"${v/1e6:.1f}MM" for v in values] + [f"${total/1e6:.1f}MM"]
+    y_vals  = values + [total]
+
+    fig = go.Figure(go.Waterfall(
+        name="NPV",
+        orientation="v",
+        measure=measure,
+        x=labels,
+        y=y_vals,
+        text=text,
+        textposition="outside",
+        connector=dict(line=dict(color="rgb(63,63,63)")),
+        increasing=dict(marker=dict(color="#2ca02c")),
+        decreasing=dict(marker=dict(color="#d62728")),
+        totals=dict(marker=dict(color="steelblue")),
+    ))
+    fig.update_layout(
+        title="NPV Contribution by Category",
+        yaxis_title="NPV ($)",
+        height=420,
+        margin=dict(t=60),
+    )
+    return fig
+
+
+# ── Tab 4: Tornado chart ───────────────────────────────────────────────────
+
+def tornado_chart(sensitivities: list[dict]) -> go.Figure:
+    """
+    sensitivities: list of {label, low_npv, base_npv, high_npv}
+    Sorted by impact magnitude.
+    """
+    df = pd.DataFrame(sensitivities)
+    df["range"] = (df["high_npv"] - df["low_npv"]).abs()
+    df = df.sort_values("range", ascending=True)
+
+    base = df["base_npv"].iloc[0]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        y=df["label"],
+        x=df["low_npv"] - base,
+        orientation="h",
+        name="Low (-20%)",
+        marker_color="#d62728",
+        base=base,
+    ))
+    fig.add_trace(go.Bar(
+        y=df["label"],
+        x=df["high_npv"] - base,
+        orientation="h",
+        name="High (+20%)",
+        marker_color="#2ca02c",
+        base=base,
+    ))
+    fig.add_vline(x=base, line_dash="dash", line_color="black", line_width=1)
+
+    fig.update_layout(
+        title="NPV Sensitivity (±20% on key inputs)",
+        xaxis_title="NPV ($)",
+        barmode="overlay",
+        height=350,
+        margin=dict(t=60),
+    )
+    return fig
