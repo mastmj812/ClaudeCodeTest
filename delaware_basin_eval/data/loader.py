@@ -22,14 +22,14 @@ WELL_CANONICAL = {
     "county":         ["county", "county name"],
     "latitude":       ["latitude", "surface latitude", "surf_lat", "lat"],
     "longitude":      ["longitude", "surface longitude", "surf_long", "lon", "long"],
-    "formation":      ["formation", "producing formation", "reservoir", "zone"],
+    "formation":      ["formation", "producing formation", "reservoir", "zone", "envinterval", "env interval"],
     "lateral_length": ["lateral length", "lateral_length", "perf interval", "completed lateral length",
-                       "lateral length (ft)", "lateral_length_ft"],
+                       "lateral length (ft)", "lateral_length_ft", "laterallength_ft", "laterallength (ft)"],
     "measured_depth": ["measured depth", "measured_depth", "total depth", "td", "md (ft)"],
     "tvd":            ["true vertical depth", "tvd", "tvd (ft)"],
     "spud_date":      ["spud date", "spud_date", "spudded"],
     "first_prod_date":["first production date", "first_prod_date", "first production", "ip date",
-                       "production start date"],
+                       "production start date", "firstproddate", "first prod date"],
     "section":        ["section", "sec", "section number"],
     "township":       ["township", "twp", "twp_num"],
     "range":          ["range", "rng", "rng_num"],
@@ -90,6 +90,15 @@ def load_well_header(file) -> pd.DataFrame:
         raise ValueError("Well header file must contain an API column.")
 
     df["api"] = _standardize_api(df["api"])
+
+    # Deduplicate: keep the row with the most non-null values per API
+    if df["api"].duplicated().any():
+        df["_completeness"] = df.notna().sum(axis=1)
+        df = (
+            df.sort_values("_completeness", ascending=False)
+              .drop_duplicates(subset=["api"], keep="first")
+              .drop(columns=["_completeness"])
+        )
 
     if "formation" in df.columns:
         df["formation"] = _normalize_formation(df["formation"])
