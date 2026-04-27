@@ -107,5 +107,7 @@ def fix_quarterly_gas(df: pd.DataFrame) -> pd.DataFrame:
         grp["gas_mcf"] = gas
         return grp
 
-    df = df.groupby("api", group_keys=False).apply(_fix_group)
-    return df.reset_index(drop=True)
+    parts = [_fix_group(grp) for _, grp in df.groupby("api")]
+    if parts:
+        return pd.concat(parts).reset_index(drop=True)
+    return df
