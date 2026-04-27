@@ -42,7 +42,7 @@ WELL_CANONICAL = {
 PROD_CANONICAL = {
     "api":            ["api", "api number", "api_number", "api14", "api 14",
                        "unformatted_api_uwi_12", "unformatted api uwi 12", "api_uwi_12"],
-    "prod_date":      ["date", "production date", "prod_date", "month", "production month"],
+    "prod_date":      ["date", "production date", "prod_date", "month", "production month", "producingmonth", "producing month"],
     "oil_bbl":        ["oil", "oil (bbl)", "oil_bbl", "liquid (bbl)", "liquids (bbl)", "oil production (bbl)"],
     "gas_mcf":        ["gas", "gas (mcf)", "gas_mcf", "gas production (mcf)", "casinghead gas (mcf)"],
     "water_bbl":      ["water", "water (bbl)", "water_bbl", "water production (bbl)"],
