@@ -18,7 +18,7 @@ WELL_CANONICAL = {
     "api":            ["api", "api number", "api_number", "api14", "api 14",
                        "unformatted_api_uwi_12", "unformatted api uwi 12", "api_uwi_12"],
     "well_name":      ["well name", "well_name", "wellname", "lease name"],
-    "operator":       ["operator", "operator name", "current operator"],
+    "operator":       ["operator", "operator name", "current operator", "envoperator", "env operator"],
     "county":         ["county", "county name"],
     "latitude":       ["latitude", "surface latitude", "surf_lat", "lat"],
     "longitude":      ["longitude", "surface longitude", "surf_long", "lon", "long"],
@@ -146,12 +146,13 @@ def load_production(file) -> pd.DataFrame:
     df = df.dropna(subset=["api", "prod_date"])
     df = df.sort_values(["api", "prod_date"]).reset_index(drop=True)
 
-    # Daily rates — used for decline fitting
+    # Daily rates — fall back to monthly volume / 30.44 when days_on is missing
+    has_days = df["days_on"].gt(0)
     df["daily_oil_rate"] = np.where(
-        df["days_on"].gt(0), df["oil_bbl"] / df["days_on"], np.nan
+        has_days, df["oil_bbl"] / df["days_on"], df["oil_bbl"] / 30.44
     )
     df["daily_gas_rate"] = np.where(
-        df["days_on"].gt(0), df["gas_mcf"] / df["days_on"], np.nan
+        has_days, df["gas_mcf"] / df["days_on"], df["gas_mcf"] / 30.44
     )
 
     # Remove duplicate API + date combinations (keep first)
