@@ -42,6 +42,7 @@ def _cached_type_curve(
     center_lat: float, center_lon: float,
     radius_miles: float, max_well_age_yr: int,
     section_apis_tuple: tuple,
+    formation_names_tuple: tuple,
 ):
     """Cache type curve per formation + filter settings."""
     from engineering.type_curve import get_offset_wells, build_type_curve
@@ -53,7 +54,7 @@ def _cached_type_curve(
     if "prod_date" in prod_df.columns:
         prod_df["prod_date"] = pd.to_datetime(prod_df["prod_date"], errors="coerce")
     offsets = get_offset_wells(
-        wells_df, formation, center_lat, center_lon,
+        wells_df, list(formation_names_tuple), center_lat, center_lon,
         radius_miles, max_well_age_yr, set(section_apis_tuple),
     )
     return build_type_curve(offsets, prod_df), offsets
@@ -201,6 +202,19 @@ with st.sidebar:
                 "Max well age for type curve (years)", 1, 10,
                 DEFAULT_MAX_WELL_AGE_YR, 1,
             )
+            all_formation_names = sorted(
+                st.session_state.wells_df["formation"].dropna().unique().tolist()
+            )
+            offset_formation_names = st.multiselect(
+                "Offset well formations",
+                options=all_formation_names,
+                default=all_formation_names,
+                help=(
+                    "Select which formation names in your dataset qualify as offset comps. "
+                    "Include all name variants (e.g. 'Wolfcamp B', 'WC-B', 'WF-B') "
+                    "that represent the zone you want to analyze."
+                ),
+            )
 
     # 4. Price deck
     if st.session_state.section_wells is not None:
@@ -267,8 +281,9 @@ with st.sidebar:
                 "discount_rate": discount_rate,
                 "lateral_length": lateral_length,
                 "spacing":       spacing,
-                "offset_radius_mi": offset_radius,
-                "max_well_age_yr":  max_well_age,
+                "offset_radius_mi":      offset_radius,
+                "max_well_age_yr":       max_well_age,
+                "offset_formation_names": offset_formation_names,
             }
         except NameError:
             pass  # sidebar widgets not yet rendered
@@ -473,6 +488,7 @@ with tab3:
                         center_lat, center_lon,
                         cfg["offset_radius_mi"], cfg["max_well_age_yr"],
                         tuple(sorted(section_wells["api"].tolist())),
+                        tuple(sorted(cfg["offset_formation_names"])),
                     )
 
                 if tc["n_wells"] == 0:
@@ -554,6 +570,7 @@ with tab4:
                     formation, center_lat, center_lon,
                     cfg["offset_radius_mi"], cfg["max_well_age_yr"],
                     tuple(sorted(section_apis)),
+                    tuple(sorted(cfg["offset_formation_names"])),
                 )
                 p50 = tc["p50"]
 
@@ -653,6 +670,7 @@ with tab4:
                         wells_json_s, prod_json_s, formation,
                         _center_lat, _center_lon,
                         alt_cfg["offset_radius_mi"], alt_cfg["max_well_age_yr"], apis_tuple,
+                        tuple(sorted(alt_cfg["offset_formation_names"])),
                     )
                     if tc_s["n_wells"] == 0:
                         continue

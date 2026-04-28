@@ -18,7 +18,7 @@ from utils.geo import haversine_miles
 
 def get_offset_wells(
     wells_df: pd.DataFrame,
-    formation: str,
+    formation_names: list,
     center_lat: float,
     center_lon: float,
     radius_miles: float,
@@ -27,7 +27,7 @@ def get_offset_wells(
 ) -> pd.DataFrame:
     """
     Filter wells_df to offset type-curve candidates:
-      - Same canonical formation (exact match after normalization)
+      - Formation is in formation_names (user-selected raw names)
       - First production date within the last max_well_age_yr years
       - Within radius_miles of center_lat/center_lon
       - Not in section_apis (exclude in-section wells from comps)
@@ -37,8 +37,8 @@ def get_offset_wells(
 
     df = wells_df.copy()
 
-    # Formation filter
-    df = df[df["formation"].fillna("") == formation]
+    # Formation filter — match any of the user-selected formation name variants
+    df = df[df["formation"].fillna("").isin(formation_names)]
 
     # Age filter
     cutoff = pd.Timestamp.now() - pd.DateOffset(years=max_well_age_yr)
