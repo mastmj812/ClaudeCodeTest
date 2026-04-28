@@ -97,7 +97,7 @@ def fix_quarterly_gas(df: pd.DataFrame) -> pd.DataFrame:
 
     def _fix_group(grp):
         grp = grp.sort_values("prod_date").copy()
-        gas = grp["gas_mcf"].fillna(0).values
+        gas = grp["gas_mcf"].fillna(0).values.copy()
         for i in range(2, len(gas)):
             if gas[i - 1] == 0 and gas[i - 2] == 0 and gas[i] > 0:
                 total = gas[i]
