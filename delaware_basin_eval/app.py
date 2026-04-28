@@ -649,8 +649,8 @@ with tab3:
                 eur_per_ft = float(np.nansum(p50_valid * 30.44)) / 10_000
                 st.metric(
                     "EUR/ft — P50",
-                    f"{eur_per_ft:.1f} BOE/ft",
-                    help="Cumulative oil production per lateral foot from the P50 type curve (10,000 ft normalized)",
+                    f"{eur_per_ft:.1f} BO/ft",
+                    help="Cumulative oil production per lateral foot from the P50 type curve (oil only; gas is modeled separately via GOR assumption)",
                 )
 
                 if offsets is not None and not offsets.empty and "first_prod_date" in offsets.columns:
