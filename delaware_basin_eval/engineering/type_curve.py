@@ -99,6 +99,7 @@ def build_type_curve(
     traces = []
     excluded = 0
     laterals = []
+    well_gors = []  # cumulative GOR per well (MCF/BBL)
 
     for idx, (_, well) in enumerate(offset_wells.iterrows()):
         api    = well["api"]
@@ -127,6 +128,12 @@ def build_type_curve(
         matrix[idx, :n] = norm_rates[:n]
         laterals.append(lat_ft)
 
+        # Cumulative GOR from actual production data
+        total_oil = wprod["oil_bbl"].fillna(0).sum()
+        total_gas = wprod["gas_mcf"].fillna(0).sum()
+        if total_oil > 0 and total_gas > 0:
+            well_gors.append(total_gas / total_oil)
+
         months = np.arange(n)
         traces.append({
             "well_name": well.get("well_name", api),
@@ -138,10 +145,14 @@ def build_type_curve(
     has_data = ~np.all(np.isnan(matrix), axis=1)
     matrix = matrix[has_data]
 
+    # Median GOR across offset wells; fall back to 1.5 MCF/BBL if no gas data
+    median_gor = float(np.median(well_gors)) if well_gors else 1.5
+
     if matrix.shape[0] == 0:
         empty = np.full(max_months, np.nan)
         return {"p10": empty, "p50": empty, "p90": empty,
-                "traces": traces, "n_wells": 0, "excluded": excluded, "median_lateral": 0.0}
+                "traces": traces, "n_wells": 0, "excluded": excluded,
+                "median_lateral": 0.0, "median_gor": median_gor}
 
     with np.errstate(all="ignore"):
         p10 = np.nanpercentile(matrix, 10, axis=0)
@@ -159,6 +170,7 @@ def build_type_curve(
         "n_wells":        int(matrix.shape[0]),
         "excluded":       excluded,
         "median_lateral": float(np.median(laterals)) if laterals else 0.0,
+        "median_gor":     median_gor,
     }
 
 

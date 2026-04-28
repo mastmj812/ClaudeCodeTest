@@ -650,7 +650,12 @@ with tab3:
                 st.metric(
                     "EUR/ft — P50",
                     f"{eur_per_ft:.1f} BO/ft",
-                    help="Cumulative oil production per lateral foot from the P50 type curve (oil only; gas is modeled separately via GOR assumption)",
+                    help="Cumulative oil production per lateral foot from the P50 type curve (oil only)",
+                )
+                st.metric(
+                    "Median GOR",
+                    f"{tc['median_gor']:.2f} MCF/BBL",
+                    help="Median cumulative gas-oil ratio across offset wells — used for gas revenue in undrilled well economics",
                 )
 
                 if offsets is not None and not offsets.empty and "first_prod_date" in offsets.columns:
@@ -740,7 +745,9 @@ with tab4:
                         })
                         continue
 
-                    cf_one = build_undrilled_well_cashflow(p50, cfg, formation)
+                    # Use GOR derived from actual offset well gas production
+                    cfg_well = {**cfg, "type_curve_gor": tc["median_gor"]}
+                    cf_one = build_undrilled_well_cashflow(p50, cfg_well, formation)
                     econ   = well_economics(cf_one, cfg["discount_rate"])
 
                     npv_val  = econ["npv"]  if (econ["npv"]  is not None and np.isfinite(econ["npv"]))  else None
@@ -835,7 +842,8 @@ with tab4:
                             )
                             if tc2["n_wells"] == 0:
                                 continue
-                            cf2 = build_undrilled_well_cashflow(tc2["p50"], alt_cfg, fm2)
+                            cfg_w2 = {**alt_cfg, "type_curve_gor": tc2["median_gor"]}
+                            cf2 = build_undrilled_well_cashflow(tc2["p50"], cfg_w2, fm2)
                             e2  = well_economics(cf2, alt_cfg["discount_rate"])
                             v2  = e2["npv"]
                             if v2 is not None and np.isfinite(v2):
