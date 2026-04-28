@@ -641,7 +641,13 @@ with tab3:
             _section_apis_t,
         )
         st.plotly_chart(
-            section_map(section_wells, offset_wells=map_offsets if not map_offsets.empty else None),
+            section_map(
+                section_wells,
+                offset_wells=map_offsets if not map_offsets.empty else None,
+                radius_miles=cfg["offset_radius_mi"],
+                center_lat=center_lat,
+                center_lon=center_lon,
+            ),
             use_container_width=True,
         )
 

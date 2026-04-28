@@ -3,6 +3,7 @@ All Plotly figure factories.
 Each function returns a plotly Figure that can be passed to st.plotly_chart.
 """
 
+import math
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
@@ -35,10 +36,35 @@ def _formation_color(formation: str) -> str:
 
 # ── Tab 1: Section map ─────────────────────────────────────────────────────
 
+def _radius_circle(
+    center_lat: float, center_lon: float, radius_miles: float, n_points: int = 120
+) -> tuple[list[float], list[float]]:
+    """Generate lat/lon points tracing a circle of radius_miles around a center."""
+    R = 3958.8  # Earth radius in miles
+    d = radius_miles / R
+    lats, lons = [], []
+    for i in range(n_points + 1):
+        bearing = math.radians(360 * i / n_points)
+        lat0 = math.radians(center_lat)
+        lon0 = math.radians(center_lon)
+        lat1 = math.asin(math.sin(lat0) * math.cos(d) +
+                         math.cos(lat0) * math.sin(d) * math.cos(bearing))
+        lon1 = lon0 + math.atan2(
+            math.sin(bearing) * math.sin(d) * math.cos(lat0),
+            math.cos(d) - math.sin(lat0) * math.sin(lat1),
+        )
+        lats.append(math.degrees(lat1))
+        lons.append(math.degrees(lon1))
+    return lats, lons
+
+
 def section_map(
     section_wells: pd.DataFrame,
     offset_wells: pd.DataFrame | None = None,
     polygon_geojson: dict | None = None,
+    radius_miles: float | None = None,
+    center_lat: float | None = None,
+    center_lon: float | None = None,
 ) -> go.Figure:
     """
     Scatter mapbox showing in-section wells colored by formation,
@@ -95,13 +121,26 @@ def section_map(
             name="Section boundary",
         ))
 
-    # Map center
-    if not section_wells.empty and section_wells[["latitude", "longitude"]].notna().all(axis=1).any():
-        valid = section_wells.dropna(subset=["latitude", "longitude"])
-        center_lat = valid["latitude"].mean()
-        center_lon = valid["longitude"].mean()
-    else:
-        center_lat, center_lon = 31.5, -104.0  # TX Delaware default
+    # Map center (use provided coords if given, otherwise derive from section wells)
+    if center_lat is None or center_lon is None:
+        if not section_wells.empty and section_wells[["latitude", "longitude"]].notna().all(axis=1).any():
+            valid = section_wells.dropna(subset=["latitude", "longitude"])
+            center_lat = valid["latitude"].mean()
+            center_lon = valid["longitude"].mean()
+        else:
+            center_lat, center_lon = 31.5, -104.0  # TX Delaware default
+
+    # Offset radius circle
+    if radius_miles is not None and radius_miles > 0:
+        circ_lats, circ_lons = _radius_circle(center_lat, center_lon, radius_miles)
+        fig.add_trace(go.Scattermapbox(
+            lat=circ_lats,
+            lon=circ_lons,
+            mode="lines",
+            line=dict(color="rgba(255,200,0,0.7)", width=2),
+            name=f"{radius_miles:.0f} mi radius",
+            hoverinfo="skip",
+        ))
 
     fig.update_layout(
         mapbox=dict(
