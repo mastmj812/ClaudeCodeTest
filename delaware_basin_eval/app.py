@@ -27,6 +27,10 @@ def _cached_fit_wells(section_wells_json: str, section_prod_json: str):
     from engineering.decline import fit_all_section_wells
     sw = pd.read_json(io.StringIO(section_wells_json), orient="split")
     sp = pd.read_json(io.StringIO(section_prod_json), orient="split")
+    # JSON parsing may read all-digit API strings as integers — restore as zero-padded strings
+    for df in [sw, sp]:
+        if "api" in df.columns:
+            df["api"] = df["api"].astype(str).str.zfill(14)
     # Re-parse dates after JSON round-trip
     for col in ["first_prod_date", "spud_date"]:
         if col in sw.columns:
@@ -49,6 +53,10 @@ def _cached_type_curve(
     from engineering.type_curve import get_offset_wells, build_type_curve
     wells_df = pd.read_json(io.StringIO(wells_json), orient="split")
     prod_df  = pd.read_json(io.StringIO(prod_json),  orient="split")
+    # JSON parsing may read all-digit API strings as integers — restore as zero-padded strings
+    for df in [wells_df, prod_df]:
+        if "api" in df.columns:
+            df["api"] = df["api"].astype(str).str.zfill(14)
     for col in ["first_prod_date", "spud_date"]:
         if col in wells_df.columns:
             wells_df[col] = pd.to_datetime(wells_df[col], errors="coerce")
@@ -398,7 +406,7 @@ with tab2:
         all_cashflows = []
 
         for res in decline_results:
-            api = res["api"]
+            api = str(res["api"]).zfill(14)
             wprod = section_prod[section_prod["api"] == api]
             if res["success"] and not wprod.empty:
                 cf = build_existing_well_cashflow(res, wprod, cfg)

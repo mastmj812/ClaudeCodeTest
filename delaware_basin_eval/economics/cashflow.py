@@ -28,7 +28,9 @@ def build_existing_well_cashflow(
 
     # ── Historical production (actual) ────────────────────────────────────
     hist = prod_df_for_well.sort_values("prod_date").copy()
-    hist = hist[hist["days_on"].fillna(0) >= 15]
+    hist_filtered = hist[hist["days_on"].fillna(0) >= 15]
+    if not hist_filtered.empty:
+        hist = hist_filtered
     oil_hist = hist["oil_bbl"].fillna(0).values
     gas_hist = hist["gas_mcf"].fillna(0).values
     rev_hist  = calc_monthly_revenue(oil_hist, gas_hist, cfg)
