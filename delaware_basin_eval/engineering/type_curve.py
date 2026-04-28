@@ -36,31 +36,40 @@ def get_offset_wells(
     from config import MIN_LATERAL_FT
 
     df = wells_df.copy()
+    counts = {"total": len(df)}
 
     # Formation filter — match any of the user-selected formation name variants
     df = df[df["formation"].fillna("").isin(formation_names)]
+    counts["after_formation"] = len(df)
 
     # Age filter
     cutoff = pd.Timestamp.now() - pd.DateOffset(years=max_well_age_yr)
     if "first_prod_date" in df.columns:
         df = df[df["first_prod_date"].notna() & (df["first_prod_date"] >= cutoff)]
+    counts["after_age"] = len(df)
 
     # Exclude in-section wells
     if section_apis:
         df = df[~df["api"].isin(section_apis)]
+    counts["after_section_exclude"] = len(df)
 
     # Lateral length filter
     if "lateral_length" in df.columns:
         df = df[df["lateral_length"].fillna(0) >= MIN_LATERAL_FT]
+    counts["after_lateral"] = len(df)
 
     # Spatial filter
     valid = df.dropna(subset=["latitude", "longitude"])
     if valid.empty:
+        valid["_filter_counts"] = None
+        valid.attrs["filter_counts"] = counts
         return valid
 
     dists = haversine_miles(center_lat, center_lon, valid["latitude"].values, valid["longitude"].values)
     valid = valid[dists <= radius_miles].copy()
+    counts["after_radius"] = len(valid)
 
+    valid.attrs["filter_counts"] = counts
     return valid.reset_index(drop=True)
 
 
@@ -96,7 +105,9 @@ def build_type_curve(
         lat_ft = well.get("lateral_length", np.nan)
 
         wprod = prod_df[prod_df["api"] == api].sort_values("prod_date")
-        wprod = wprod[wprod["days_on"].fillna(0) >= 15]
+        wprod_filtered = wprod[wprod["days_on"].fillna(0) >= 15]
+        if not wprod_filtered.empty:
+            wprod = wprod_filtered
 
         if wprod.empty:
             excluded += 1

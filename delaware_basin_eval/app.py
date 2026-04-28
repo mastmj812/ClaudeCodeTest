@@ -16,6 +16,7 @@ from config import (
     DEFAULT_PRICE_DECK, DEFAULT_DEDUCTIONS, DEFAULT_DC_COSTS,
     DEFAULT_LOE_PER_BOE, DEFAULT_DISCOUNT_RATE, DEFAULT_SPACING,
     DEFAULT_OFFSET_RADIUS_MI, DEFAULT_MAX_WELL_AGE_YR, FORMATIONS,
+    MIN_LATERAL_FT,
 )
 
 
@@ -496,6 +497,17 @@ with tab3:
                         f"No qualifying offset wells found for {selected_formation} within "
                         f"{cfg['offset_radius_mi']} miles. Try increasing the radius or max well age."
                     )
+                    fc = offsets.attrs.get("filter_counts", {})
+                    if fc:
+                        st.caption(
+                            f"Filter breakdown — "
+                            f"Total wells: {fc.get('total', '?')} → "
+                            f"After formation: {fc.get('after_formation', '?')} → "
+                            f"After age ({cfg['max_well_age_yr']}yr): {fc.get('after_age', '?')} → "
+                            f"After section exclude: {fc.get('after_section_exclude', '?')} → "
+                            f"After lateral ≥ {MIN_LATERAL_FT:,} ft: {fc.get('after_lateral', '?')} → "
+                            f"After radius: {fc.get('after_radius', '?')}"
+                        )
                 else:
                     st.plotly_chart(
                         type_curve_chart(
