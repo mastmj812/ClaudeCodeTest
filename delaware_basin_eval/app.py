@@ -308,7 +308,8 @@ with st.sidebar:
     # 8. LOE, discount, spacing
     if st.session_state.section_wells is not None:
         with st.expander("⚙️ 8. LOE, Discount & Spacing"):
-            loe_per_boe    = st.number_input("LOE ($/BOE/month)", value=DEFAULT_LOE_PER_BOE, step=0.50)
+            loe_per_boe    = st.number_input("LOE ($/BOE)", value=DEFAULT_LOE_PER_BOE, step=0.50,
+                                             help="Lease operating expense per barrel of oil equivalent produced. Scales with monthly production volume.")
             discount_rate  = st.number_input("Discount rate (%)", value=DEFAULT_DISCOUNT_RATE * 100, step=0.5) / 100
             lateral_length = st.number_input("Assumed lateral length (ft)", value=10000, step=500)
 
