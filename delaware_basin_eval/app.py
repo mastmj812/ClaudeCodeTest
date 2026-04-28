@@ -95,6 +95,8 @@ def _init_state():
         "prod_warnings":  [],
         # economics config (populated by sidebar)
         "cfg": None,
+        # per-formation offset name selections (canonical → list of raw names)
+        "formation_name_map": {},
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -211,19 +213,6 @@ with st.sidebar:
                 "Max well age for type curve (years)", 1, 10,
                 DEFAULT_MAX_WELL_AGE_YR, 1,
             )
-            all_formation_names = sorted(
-                st.session_state.wells_df["formation"].dropna().unique().tolist()
-            )
-            offset_formation_names = st.multiselect(
-                "Offset well formations",
-                options=all_formation_names,
-                default=all_formation_names,
-                help=(
-                    "Select which formation names in your dataset qualify as offset comps. "
-                    "Include all name variants (e.g. 'Wolfcamp B', 'WC-B', 'WF-B') "
-                    "that represent the zone you want to analyze."
-                ),
-            )
 
     # 4. Price deck
     if st.session_state.section_wells is not None:
@@ -290,9 +279,8 @@ with st.sidebar:
                 "discount_rate": discount_rate,
                 "lateral_length": lateral_length,
                 "spacing":       spacing,
-                "offset_radius_mi":      offset_radius,
-                "max_well_age_yr":       max_well_age,
-                "offset_formation_names": offset_formation_names,
+                "offset_radius_mi": offset_radius,
+                "max_well_age_yr":  max_well_age,
             }
         except NameError:
             pass  # sidebar widgets not yet rendered
@@ -471,41 +459,72 @@ with tab3:
     else:
         from ui.charts import type_curve_chart
 
-        # Formation selector
-        available_formations = sorted(section_wells["formation"].dropna().unique().tolist())
-        selected_formation = st.selectbox(
-            "Formation for type curve",
-            options=available_formations if available_formations else ["No formations found"],
+        # All raw formation names available in the dataset
+        all_data_formations = sorted(wells_df["formation"].dropna().unique().tolist())
+
+        # Formation selector — all canonical formations, not just what's in section
+        extra = [f for f in all_data_formations if f not in FORMATIONS]
+        formation_options = FORMATIONS + extra
+
+        top_left, top_right = st.columns([2, 3])
+        with top_left:
+            selected_formation = st.selectbox("Formation for type curve", options=formation_options)
+
+        with top_right:
+            # Per-formation offset name selection, persisted in session state
+            saved_names = st.session_state.formation_name_map.get(selected_formation)
+            if saved_names is None:
+                # Default: the formation itself if it exists in the data
+                saved_names = [selected_formation] if selected_formation in all_data_formations else []
+            valid_defaults = [n for n in saved_names if n in all_data_formations]
+            offset_names = st.multiselect(
+                "Offset well formation names for comp set",
+                options=all_data_formations,
+                default=valid_defaults,
+                help=(
+                    "Pick every raw ENVInterval value that represents this zone "
+                    "(e.g. 'Wolfcamp B', 'WC-B', 'WF-B'). "
+                    "This selection is saved per formation and used in Undrilled Economics."
+                ),
+            )
+            st.session_state.formation_name_map[selected_formation] = offset_names
+
+        valid_sw = section_wells.dropna(subset=["latitude", "longitude"])
+        center_lat = valid_sw["latitude"].mean() if not valid_sw.empty else 31.5
+        center_lon = valid_sw["longitude"].mean() if not valid_sw.empty else -104.0
+
+        # Run type curve computation
+        tc, offsets = None, None
+        if offset_names:
+            with st.spinner(f"Finding {selected_formation} offset wells…"):
+                tc, offsets = _cached_type_curve(
+                    wells_df.to_json(orient="split", date_format="iso"),
+                    prod_df.to_json(orient="split", date_format="iso"),
+                    selected_formation,
+                    center_lat, center_lon,
+                    cfg["offset_radius_mi"], cfg["max_well_age_yr"],
+                    tuple(sorted(section_wells["api"].tolist())),
+                    tuple(sorted(offset_names)),
+                )
+        else:
+            st.info("Select at least one formation name in the comp set to build a type curve.")
+
+        # Map — section wells + comp set offset wells
+        st.plotly_chart(
+            section_map(section_wells, offset_wells=offsets if offsets is not None else None),
+            use_container_width=True,
         )
 
         col_left, col_right = st.columns([3, 2])
 
         with col_left:
-            if selected_formation and selected_formation != "No formations found":
-                valid_sw = section_wells.dropna(subset=["latitude", "longitude"])
-                if not valid_sw.empty:
-                    center_lat = valid_sw["latitude"].mean()
-                    center_lon = valid_sw["longitude"].mean()
-                else:
-                    center_lat, center_lon = 31.5, -104.0
-
-                with st.spinner(f"Finding {selected_formation} offset wells…"):
-                    tc, offsets = _cached_type_curve(
-                        wells_df.to_json(orient="split", date_format="iso"),
-                        prod_df.to_json(orient="split", date_format="iso"),
-                        selected_formation,
-                        center_lat, center_lon,
-                        cfg["offset_radius_mi"], cfg["max_well_age_yr"],
-                        tuple(sorted(section_wells["api"].tolist())),
-                        tuple(sorted(cfg["offset_formation_names"])),
-                    )
-
+            if tc is not None:
                 if tc["n_wells"] == 0:
                     st.warning(
                         f"No qualifying offset wells found for {selected_formation} within "
                         f"{cfg['offset_radius_mi']} miles. Try increasing the radius or max well age."
                     )
-                    fc = offsets.attrs.get("filter_counts", {})
+                    fc = offsets.attrs.get("filter_counts", {}) if offsets is not None else {}
                     if fc:
                         st.caption(
                             f"Filter breakdown — "
@@ -532,10 +551,10 @@ with tab3:
 
         with col_right:
             st.markdown("#### Offset Well Stats")
-            if selected_formation and selected_formation != "No formations found" and tc["n_wells"] > 0:
+            if tc is not None and tc["n_wells"] > 0:
                 st.metric("Wells in comp set", tc["n_wells"])
                 st.metric("Median lateral length", f"{tc['median_lateral']:,.0f} ft")
-                if not offsets.empty and "first_prod_date" in offsets.columns:
+                if offsets is not None and not offsets.empty and "first_prod_date" in offsets.columns:
                     dates = offsets["first_prod_date"].dropna()
                     if not dates.empty:
                         st.metric(
@@ -583,14 +602,25 @@ with tab4:
                 if n_remaining == 0:
                     continue
 
-                # Build type curve for this formation (cached)
+                # Build type curve using the comp set configured in Tab 3
+                fnames = st.session_state.formation_name_map.get(formation, [formation])
+                if not fnames:
+                    econ_rows.append({
+                        "Formation": formation, "Remaining Wells": n_remaining,
+                        "NPV/Well ($MM)": None, "IRR/Well (%)": None,
+                        "Payout/Well (mo)": None, "PV10/Well ($MM)": None,
+                        "Total NPV ($MM)": None, "Type Curve Wells": 0,
+                        "Note": "No comp set — configure in Type Curve tab",
+                    })
+                    continue
+
                 tc, _ = _cached_type_curve(
                     wells_df.to_json(orient="split", date_format="iso"),
                     prod_df.to_json(orient="split", date_format="iso"),
                     formation, center_lat, center_lon,
                     cfg["offset_radius_mi"], cfg["max_well_age_yr"],
                     tuple(sorted(section_apis)),
-                    tuple(sorted(cfg["offset_formation_names"])),
+                    tuple(sorted(fnames)),
                 )
                 p50 = tc["p50"]
 
@@ -675,6 +705,8 @@ with tab4:
                 low_cfg  = {**cfg, key: base_val * 0.80}
                 high_cfg = {**cfg, key: base_val * 1.20}
 
+            _fname_map = dict(st.session_state.formation_name_map)
+
             def _quick_npv(alt_cfg, rem_df=rem_df, _center_lat=center_lat, _center_lon=center_lon):
                 total = 0.0
                 wells_json_s = wells_df.to_json(orient="split", date_format="iso")
@@ -685,12 +717,15 @@ with tab4:
                     if n == 0:
                         continue
                     formation = row["Formation"]
+                    fnames_s  = _fname_map.get(formation, [formation])
+                    if not fnames_s:
+                        continue
                     # Reuse cached type curve — production offset filter args unchanged
                     tc_s, _ = _cached_type_curve(
                         wells_json_s, prod_json_s, formation,
                         _center_lat, _center_lon,
                         alt_cfg["offset_radius_mi"], alt_cfg["max_well_age_yr"], apis_tuple,
-                        tuple(sorted(alt_cfg["offset_formation_names"])),
+                        tuple(sorted(fnames_s)),
                     )
                     if tc_s["n_wells"] == 0:
                         continue
