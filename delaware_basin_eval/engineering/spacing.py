@@ -4,36 +4,34 @@ Calculate remaining drillable locations per formation in a section.
 
 import pandas as pd
 import numpy as np
-from config import FORMATIONS, DEFAULT_SPACING, PLSS_SECTION_ACRES
+from config import FORMATIONS, DEFAULT_WELLS_PER_SECTION, PLSS_SECTION_ACRES
 
 
 def remaining_locations(
     section_wells: pd.DataFrame,
     section_acreage: float,
-    spacing: dict[str, float],
+    wells_per_section: dict[str, int],
 ) -> pd.DataFrame:
     """
-    For each formation, compute:
-      - existing_wells: count of wells already drilled
-      - total_slots: floor(section_acreage / acres_per_well)
-      - remaining: max(0, total_slots - existing_wells)
+    For each formation, compute total drillable slots scaled to actual acreage,
+    subtract existing wells, and return remaining undrilled locations.
 
-    Returns a DataFrame with one row per formation.
+    wells_per_section is keyed by formation and represents wells per 640-acre section.
+    For partial sections, slots are scaled proportionally.
     """
     rows = []
     formation_counts = section_wells["formation"].value_counts().to_dict()
 
     for formation in FORMATIONS:
-        acres_per_well = spacing.get(formation, DEFAULT_SPACING.get(formation, 80.0))
-        if acres_per_well <= 0:
-            acres_per_well = 80.0
-        total_slots  = max(0, int(section_acreage / acres_per_well))
-        existing     = formation_counts.get(formation, 0)
-        remaining    = max(0, total_slots - existing)
+        n_per_section = wells_per_section.get(formation, DEFAULT_WELLS_PER_SECTION.get(formation, 4))
+        n_per_section = max(0, int(n_per_section))
+        total_slots   = max(0, int(section_acreage / PLSS_SECTION_ACRES * n_per_section))
+        existing      = formation_counts.get(formation, 0)
+        remaining     = max(0, total_slots - existing)
 
         rows.append({
             "Formation":        formation,
-            "Acres/Well":       acres_per_well,
+            "Wells/Section":    n_per_section,
             "Total Slots":      total_slots,
             "Existing Wells":   existing,
             "Remaining":        remaining,

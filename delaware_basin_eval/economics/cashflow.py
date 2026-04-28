@@ -31,11 +31,17 @@ def build_existing_well_cashflow(
     hist_filtered = hist[hist["days_on"].fillna(0) >= 15]
     if not hist_filtered.empty:
         hist = hist_filtered
-    oil_hist = hist["oil_bbl"].fillna(0).values
-    gas_hist = hist["gas_mcf"].fillna(0).values
+    oil_hist   = hist["oil_bbl"].fillna(0).values
+    gas_hist   = hist["gas_mcf"].fillna(0).values
+    water_hist = hist["water_bbl"].fillna(0).values if "water_bbl" in hist.columns else np.zeros_like(oil_hist)
+
     rev_hist  = calc_monthly_revenue(oil_hist, gas_hist, cfg)
-    boe_hist  = oil_hist + gas_hist / 6.0
-    loe_hist  = boe_hist * cfg["loe_per_boe"]
+    loe_hist  = (
+        oil_hist   * cfg.get("loe_oil",   0.0) +
+        gas_hist   * cfg.get("loe_gas",   0.0) +
+        water_hist * cfg.get("loe_water", 0.0) +
+        cfg.get("loe_fixed", 0.0)
+    )
     net_hist  = rev_hist["net_revenue"] - loe_hist
 
     # ── Projected production (future) ─────────────────────────────────────
@@ -51,10 +57,21 @@ def build_existing_well_cashflow(
     else:
         gor = 1.5  # MCF/BBL default
     gas_proj = oil_proj * gor
+    # Estimate water from historical WOR
+    oil_sum = hist["oil_bbl"].sum()
+    if "water_bbl" in hist.columns and oil_sum > 0:
+        wor = hist["water_bbl"].fillna(0).sum() / oil_sum
+    else:
+        wor = cfg.get("wor", 1.5)
+    water_proj = oil_proj * wor
 
     rev_proj  = calc_monthly_revenue(oil_proj, gas_proj, cfg)
-    boe_proj  = oil_proj + gas_proj / 6.0
-    loe_proj  = boe_proj * cfg["loe_per_boe"]
+    loe_proj  = (
+        oil_proj   * cfg.get("loe_oil",   0.0) +
+        gas_proj   * cfg.get("loe_gas",   0.0) +
+        water_proj * cfg.get("loe_water", 0.0) +
+        cfg.get("loe_fixed", 0.0)
+    )
     net_proj  = rev_proj["net_revenue"] - loe_proj
 
     # Trim trailing zeros
@@ -86,15 +103,19 @@ def build_undrilled_well_cashflow(
     oil_rates_daily = np.nan_to_num(np.asarray(type_curve_p50, dtype=float), nan=0.0) * scale
 
     # Daily rate → monthly volume
-    oil_bbl = oil_rates_daily * days_per_month
-
-    # Gas GOR: use a typical Delaware Basin default (1.5 MCF/BBL) if not provided
-    gor = cfg.get("type_curve_gor", 1.5)
-    gas_mcf = oil_bbl * gor
+    oil_bbl   = oil_rates_daily * days_per_month
+    gor       = cfg.get("type_curve_gor", 1.5)
+    wor       = cfg.get("wor", 1.5)
+    gas_mcf   = oil_bbl * gor
+    water_bbl = oil_bbl * wor
 
     rev  = calc_monthly_revenue(oil_bbl, gas_mcf, cfg)
-    boe  = oil_bbl + gas_mcf / 6.0
-    loe  = boe * cfg["loe_per_boe"]
+    loe  = (
+        oil_bbl   * cfg.get("loe_oil",   0.0) +
+        gas_mcf   * cfg.get("loe_gas",   0.0) +
+        water_bbl * cfg.get("loe_water", 0.0) +
+        cfg.get("loe_fixed", 0.0)
+    )
     net  = rev["net_revenue"] - loe
 
     # Prepend D&C capex (in $MM → convert to $)

@@ -121,25 +121,33 @@ DEFAULT_DC_COSTS: dict[str, float] = {
     "Woodford":              12.0,
 }
 
-# ── Default LOE and discount ───────────────────────────────────────────────
-DEFAULT_LOE_PER_BOE = 6.00     # $/BOE/month
+# ── Default LOE by cost component ─────────────────────────────────────────
+DEFAULT_LOE_OIL_PER_BBL   = 2.50    # $/BBL oil produced (fluid handling, treating)
+DEFAULT_LOE_GAS_PER_MCF   = 0.30    # $/MCF gas produced (gathering, compression)
+DEFAULT_LOE_WATER_PER_BBL = 1.25    # $/BBL water produced (disposal)
+DEFAULT_LOE_FIXED_PER_MO  = 2000.0  # $/month fixed (pump lease, lift, labor allocation)
+
+# ── Default water-oil ratio for undrilled well LOE estimation ─────────────
+DEFAULT_WOR = 1.5  # BBL water / BBL oil
+
+# ── Default discount rate ──────────────────────────────────────────────────
 DEFAULT_DISCOUNT_RATE = 0.10   # 10% annual
 
-# ── Default well spacing by formation (acres/well) ────────────────────────
-DEFAULT_SPACING: dict[str, float] = {
-    "Upper Avalon":            80.0,
-    "Middle Avalon":           80.0,
-    "Lower Avalon":            80.0,
-    "First Bone Spring":       80.0,
-    "Second Bone Spring":      80.0,
-    "Third Bone Spring":       80.0,
-    "Third Bone Spring Sand":  80.0,
-    "Wolfcamp XY":             80.0,
-    "Wolfcamp A":              80.0,
-    "Wolfcamp B":              80.0,
-    "Wolfcamp C":             100.0,
-    "Wolfcamp D":             100.0,
-    "Woodford":               100.0,
+# ── Default wells per 640-acre section by formation ───────────────────────
+DEFAULT_WELLS_PER_SECTION: dict[str, int] = {
+    "Upper Avalon":            4,
+    "Middle Avalon":           4,
+    "Lower Avalon":            4,
+    "First Bone Spring":       4,
+    "Second Bone Spring":      4,
+    "Third Bone Spring":       4,
+    "Third Bone Spring Sand":  4,
+    "Wolfcamp XY":             4,
+    "Wolfcamp A":              4,
+    "Wolfcamp B":              4,
+    "Wolfcamp C":              4,
+    "Wolfcamp D":              4,
+    "Woodford":                4,
 }
 
 # ── Default offset filter ──────────────────────────────────────────────────

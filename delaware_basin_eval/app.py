@@ -14,7 +14,9 @@ from data.section_filter import get_section_wells
 from ui.charts import section_map
 from config import (
     DEFAULT_PRICE_DECK, DEFAULT_DEDUCTIONS, DEFAULT_DC_COSTS,
-    DEFAULT_LOE_PER_BOE, DEFAULT_DISCOUNT_RATE, DEFAULT_SPACING,
+    DEFAULT_LOE_OIL_PER_BBL, DEFAULT_LOE_GAS_PER_MCF,
+    DEFAULT_LOE_WATER_PER_BBL, DEFAULT_LOE_FIXED_PER_MO,
+    DEFAULT_WOR, DEFAULT_DISCOUNT_RATE, DEFAULT_WELLS_PER_SECTION,
     DEFAULT_OFFSET_RADIUS_MI, DEFAULT_MAX_WELL_AGE_YR, FORMATIONS,
     MIN_LATERAL_FT,
 )
@@ -99,6 +101,8 @@ def _init_state():
         "formation_name_map": {},
         # user-defined formation mapping (raw ENVInterval value → canonical name)
         "formation_mapping": {},
+        # existing well total NPV ($) computed in Tab 2, consumed in Tab 4
+        "existing_well_npv": 0.0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -305,41 +309,56 @@ with st.sidebar:
             )
             dc_costs = dict(zip(dc_df["Formation"], dc_df["D&C Cost ($MM)"]))
 
-    # 8. LOE, discount, spacing
+    # 8. LOE, discount, well density
     if st.session_state.section_wells is not None:
-        with st.expander("⚙️ 8. LOE, Discount & Spacing"):
-            loe_per_boe    = st.number_input("LOE ($/BOE)", value=DEFAULT_LOE_PER_BOE, step=0.50,
-                                             help="Lease operating expense per barrel of oil equivalent produced. Scales with monthly production volume.")
+        with st.expander("⚙️ 8. LOE, Discount & Well Density"):
+            st.markdown("**Variable LOE**")
+            _c1, _c2 = st.columns(2)
+            with _c1:
+                loe_oil   = st.number_input("Oil LOE ($/BBL)",   value=DEFAULT_LOE_OIL_PER_BBL,   step=0.25)
+                loe_gas   = st.number_input("Gas LOE ($/MCF)",   value=DEFAULT_LOE_GAS_PER_MCF,   step=0.05)
+            with _c2:
+                loe_water = st.number_input("Water LOE ($/BBL)", value=DEFAULT_LOE_WATER_PER_BBL, step=0.25)
+                loe_fixed = st.number_input("Fixed LOE ($/mo)",  value=DEFAULT_LOE_FIXED_PER_MO,  step=100.0,
+                                            help="Flat monthly charge per well: pump lease, lift equipment, allocated labor")
+            wor = st.number_input(
+                "Water-Oil Ratio (undrilled)", value=DEFAULT_WOR, step=0.25, min_value=0.0,
+                help="BBL water per BBL oil — used to estimate water disposal cost for undrilled wells. Existing wells use actual production data.",
+            )
             discount_rate  = st.number_input("Discount rate (%)", value=DEFAULT_DISCOUNT_RATE * 100, step=0.5) / 100
             lateral_length = st.number_input("Assumed lateral length (ft)", value=10000, step=500)
 
-            st.markdown("**Well spacing (acres/well)**")
-            spacing_rows = [{"Formation": f, "Acres/Well": DEFAULT_SPACING[f]} for f in FORMATIONS]
-            spacing_df = st.data_editor(
-                pd.DataFrame(spacing_rows),
+            st.markdown("**Wells per section (640 acres)**")
+            wps_rows = [{"Formation": f, "Wells/Section": DEFAULT_WELLS_PER_SECTION[f]} for f in FORMATIONS]
+            wps_df = st.data_editor(
+                pd.DataFrame(wps_rows),
                 hide_index=True,
                 use_container_width=True,
                 disabled=["Formation"],
             )
-            spacing = dict(zip(spacing_df["Formation"], spacing_df["Acres/Well"]))
+            wells_per_section = dict(zip(wps_df["Formation"], wps_df["Wells/Section"]))
 
     # Build config dict if section is selected
     if st.session_state.section_wells is not None:
         try:
             st.session_state.cfg = {
-                "oil_price":     oil_price,
-                "gas_price":     gas_price,
-                "ngl_yield":     ngl_yield,
-                "ngl_price":     ngl_price,
-                "nri":           nri,
-                "oil_severance": oil_sev,
-                "gas_severance": gas_sev,
-                "ad_valorem":    ad_val,
-                "dc_costs":      dc_costs,
-                "loe_per_boe":   loe_per_boe,
-                "discount_rate": discount_rate,
-                "lateral_length": lateral_length,
-                "spacing":       spacing,
+                "oil_price":        oil_price,
+                "gas_price":        gas_price,
+                "ngl_yield":        ngl_yield,
+                "ngl_price":        ngl_price,
+                "nri":              nri,
+                "oil_severance":    oil_sev,
+                "gas_severance":    gas_sev,
+                "ad_valorem":       ad_val,
+                "dc_costs":         dc_costs,
+                "loe_oil":          loe_oil,
+                "loe_gas":          loe_gas,
+                "loe_water":        loe_water,
+                "loe_fixed":        loe_fixed,
+                "wor":              wor,
+                "discount_rate":    discount_rate,
+                "lateral_length":   lateral_length,
+                "wells_per_section": wells_per_section,
                 "offset_radius_mi": offset_radius,
                 "max_well_age_yr":  max_well_age,
             }
@@ -494,6 +513,8 @@ with tab2:
         total_pv10 = sum(r["PV10 ($MM)"] or 0 for r in econ_rows)
         total_eur  = sum(r["EUR (MBOE)"] or 0 for r in econ_rows)
         successful = sum(1 for r in econ_rows if r["Status"] == "✅")
+        # Store for Tab 4 waterfall
+        st.session_state.existing_well_npv = total_npv * 1_000_000
 
         col_a, col_b, col_c, col_d = st.columns(4)
         col_a.metric("Total PV10",         f"${total_pv10:.1f}MM")
@@ -554,9 +575,13 @@ with tab3:
         center_lat = valid_sw["latitude"].mean() if not valid_sw.empty else 31.5
         center_lon = valid_sw["longitude"].mean() if not valid_sw.empty else -104.0
 
-        # Run type curve computation
+        # Effective comp set: use configured names; fall back to the selected formation itself
+        effective_fnames = offset_names if offset_names else (
+            [selected_formation] if selected_formation in all_data_formations else []
+        )
+
         tc, offsets = None, None
-        if offset_names:
+        if effective_fnames:
             with st.spinner(f"Finding {selected_formation} offset wells…"):
                 tc, offsets = _cached_type_curve(
                     wells_df.to_json(orient="split", date_format="iso"),
@@ -565,12 +590,13 @@ with tab3:
                     center_lat, center_lon,
                     cfg["offset_radius_mi"], cfg["max_well_age_yr"],
                     tuple(sorted(section_wells["api"].tolist())),
-                    tuple(sorted(offset_names)),
+                    tuple(sorted(effective_fnames)),
                 )
-        else:
+
+        if not offset_names and not effective_fnames:
             st.info("Select at least one formation name in the comp set to build a type curve.")
 
-        # Map — section wells + comp set offset wells
+        # Map — always shows formation-specific offset wells for the selected formation
         st.plotly_chart(
             section_map(section_wells, offset_wells=offsets if offsets is not None else None),
             use_container_width=True,
@@ -605,6 +631,8 @@ with tab3:
                         ),
                         use_container_width=True,
                     )
+                    if not offset_names:
+                        st.caption("Using default comp set (same formation name). Configure a custom comp set above.")
                     if tc["excluded"] > 0:
                         st.caption(
                             f"{tc['excluded']} wells excluded (missing lateral length or production)."
@@ -615,6 +643,16 @@ with tab3:
             if tc is not None and tc["n_wells"] > 0:
                 st.metric("Wells in comp set", tc["n_wells"])
                 st.metric("Median lateral length", f"{tc['median_lateral']:,.0f} ft")
+
+                # EUR/ft of P50 curve
+                p50_valid = tc["p50"]
+                eur_per_ft = float(np.nansum(p50_valid * 30.44)) / 10_000
+                st.metric(
+                    "EUR/ft — P50",
+                    f"{eur_per_ft:.1f} BOE/ft",
+                    help="Cumulative oil production per lateral foot from the P50 type curve (10,000 ft normalized)",
+                )
+
                 if offsets is not None and not offsets.empty and "first_prod_date" in offsets.columns:
                     dates = offsets["first_prod_date"].dropna()
                     if not dates.empty:
@@ -628,7 +666,7 @@ with tab3:
             rem_df = remaining_locations(
                 section_wells,
                 st.session_state.section_acreage,
-                cfg["spacing"],
+                cfg["wells_per_section"],
             )
             st.dataframe(rem_df, use_container_width=True, hide_index=True)
             total_remaining = rem_df["Remaining"].sum()
@@ -650,7 +688,7 @@ with tab4:
         center_lon = valid_sw["longitude"].mean() if not valid_sw.empty else -104.0
         section_apis = set(section_wells["api"])
 
-        rem_df = remaining_locations(section_wells, st.session_state.section_acreage, cfg["spacing"])
+        rem_df = remaining_locations(section_wells, st.session_state.section_acreage, cfg["wells_per_section"])
 
         if not st.session_state.formation_name_map:
             st.info(
@@ -744,19 +782,20 @@ with tab4:
                 st.dataframe(pd.DataFrame(econ_rows), use_container_width=True, hide_index=True)
 
             if formation_npvs:
+                existing_npv = st.session_state.get("existing_well_npv", 0.0) or 0.0
                 st.plotly_chart(
-                    npv_waterfall(formation_npvs, 0.0),
+                    npv_waterfall(formation_npvs, existing_npv),
                     use_container_width=True,
                 )
 
             if formation_npvs:
                 st.markdown("#### NPV Sensitivity (±20%)")
                 sensitivity_inputs = {
-                    "Oil Price":  ("oil_price",   cfg["oil_price"]),
-                    "Gas Price":  ("gas_price",   cfg["gas_price"]),
-                    "D&C Cost":   ("dc_costs",    None),
-                    "LOE":        ("loe_per_boe", cfg["loe_per_boe"]),
-                    "NRI":        ("nri",         cfg["nri"]),
+                    "Oil Price":  ("oil_price", cfg["oil_price"]),
+                    "Gas Price":  ("gas_price", cfg["gas_price"]),
+                    "D&C Cost":   ("dc_costs",  None),
+                    "LOE (all)":  ("loe_all",   None),
+                    "NRI":        ("nri",        cfg["nri"]),
                 }
 
                 sens_rows = []
@@ -767,6 +806,11 @@ with tab4:
                     if key == "dc_costs":
                         low_cfg  = {**cfg, "dc_costs": {f: v * 0.80 for f, v in cfg["dc_costs"].items()}}
                         high_cfg = {**cfg, "dc_costs": {f: v * 1.20 for f, v in cfg["dc_costs"].items()}}
+                    elif key == "loe_all":
+                        low_cfg  = {**cfg, "loe_oil": cfg["loe_oil"] * 0.80, "loe_gas": cfg["loe_gas"] * 0.80,
+                                    "loe_water": cfg["loe_water"] * 0.80, "loe_fixed": cfg["loe_fixed"] * 0.80}
+                        high_cfg = {**cfg, "loe_oil": cfg["loe_oil"] * 1.20, "loe_gas": cfg["loe_gas"] * 1.20,
+                                    "loe_water": cfg["loe_water"] * 1.20, "loe_fixed": cfg["loe_fixed"] * 1.20}
                     else:
                         low_cfg  = {**cfg, key: base_val * 0.80}
                         high_cfg = {**cfg, key: base_val * 1.20}
