@@ -654,7 +654,7 @@ with tab3:
                 )
                 st.metric(
                     "Median GOR",
-                    f"{tc['median_gor']:.2f} MCF/BBL",
+                    f"{tc.get('median_gor', 1.5):.2f} MCF/BBL",
                     help="Median cumulative gas-oil ratio across offset wells — used for gas revenue in undrilled well economics",
                 )
 
@@ -746,7 +746,7 @@ with tab4:
                         continue
 
                     # Use GOR derived from actual offset well gas production
-                    cfg_well = {**cfg, "type_curve_gor": tc["median_gor"]}
+                    cfg_well = {**cfg, "type_curve_gor": tc.get("median_gor", 1.5)}
                     cf_one = build_undrilled_well_cashflow(p50, cfg_well, formation)
                     econ   = well_economics(cf_one, cfg["discount_rate"])
 
@@ -842,7 +842,7 @@ with tab4:
                             )
                             if tc2["n_wells"] == 0:
                                 continue
-                            cfg_w2 = {**alt_cfg, "type_curve_gor": tc2["median_gor"]}
+                            cfg_w2 = {**alt_cfg, "type_curve_gor": tc2.get("median_gor", 1.5)}
                             cf2 = build_undrilled_well_cashflow(tc2["p50"], cfg_w2, fm2)
                             e2  = well_economics(cf2, alt_cfg["discount_rate"])
                             v2  = e2["npv"]
