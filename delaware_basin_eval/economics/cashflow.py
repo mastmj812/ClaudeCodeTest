@@ -82,7 +82,8 @@ def build_undrilled_well_cashflow(
     """
     lateral = cfg.get("lateral_length", 10_000)
     scale   = lateral / 10_000.0
-    oil_rates_daily = np.asarray(type_curve_p50, dtype=float) * scale  # BOPD
+    # NaN in the type curve means no data (beyond well life); treat as 0 production
+    oil_rates_daily = np.nan_to_num(np.asarray(type_curve_p50, dtype=float), nan=0.0) * scale
 
     # Daily rate → monthly volume
     oil_bbl = oil_rates_daily * days_per_month

@@ -651,162 +651,169 @@ with tab4:
 
         rem_df = remaining_locations(section_wells, st.session_state.section_acreage, cfg["spacing"])
 
-        with st.spinner("Computing undrilled well economics…"):
-            econ_rows = []
-            formation_npvs = {}
-            all_undrilled_cf = []
-
-            for _, row in rem_df.iterrows():
-                formation  = row["Formation"]
-                n_remaining = int(row["Remaining"])
-                if n_remaining == 0:
-                    continue
-
-                # Build type curve using the comp set configured in Tab 3
-                fnames = st.session_state.formation_name_map.get(formation, [formation])
-                if not fnames:
-                    econ_rows.append({
-                        "Formation": formation, "Remaining Wells": n_remaining,
-                        "NPV/Well ($MM)": None, "IRR/Well (%)": None,
-                        "Payout/Well (mo)": None, "PV10/Well ($MM)": None,
-                        "Total NPV ($MM)": None, "Type Curve Wells": 0,
-                        "Note": "No comp set — configure in Type Curve tab",
-                    })
-                    continue
-
-                tc, _ = _cached_type_curve(
-                    wells_df.to_json(orient="split", date_format="iso"),
-                    prod_df.to_json(orient="split", date_format="iso"),
-                    formation, center_lat, center_lon,
-                    cfg["offset_radius_mi"], cfg["max_well_age_yr"],
-                    tuple(sorted(section_apis)),
-                    tuple(sorted(fnames)),
-                )
-                p50 = tc["p50"]
-
-                if tc["n_wells"] == 0 or np.all(np.isnan(p50)):
-                    econ_rows.append({
-                        "Formation": formation, "Remaining Wells": n_remaining,
-                        "NPV/Well ($MM)": None, "IRR/Well (%)": None,
-                        "Payout/Well (mo)": None, "PV10/Well ($MM)": None,
-                        "Total NPV ($MM)": None, "Type Curve Wells": 0,
-                    })
-                    continue
-
-                # Single-well economics (all remaining wells use same type curve)
-                cf_one = build_undrilled_well_cashflow(p50, cfg, formation)
-                econ   = well_economics(cf_one, cfg["discount_rate"])
-
-                total_npv = (econ["npv"] or 0) * n_remaining
-                formation_npvs[formation] = total_npv
-
-                for _ in range(n_remaining):
-                    all_undrilled_cf.append(cf_one)
-
-                econ_rows.append({
-                    "Formation":          formation,
-                    "Remaining Wells":    n_remaining,
-                    "Type Curve Wells":   tc["n_wells"],
-                    "NPV/Well ($MM)":     round(econ["npv"] / 1e6, 2) if econ["npv"] is not None else None,
-                    "IRR/Well (%)":       round(econ["irr"] * 100, 1) if econ["irr"] is not None else None,
-                    "Payout/Well (mo)":   econ["payout"],
-                    "PV10/Well ($MM)":    round(econ["pv10"] / 1e6, 2) if econ["pv10"] is not None else None,
-                    "Total NPV ($MM)":    round(total_npv / 1e6, 2),
-                })
-
-        # Grand total metrics
-        total_undrilled_npv  = sum(v for v in formation_npvs.values())
-        total_undrilled_pv10 = sum(
-            (r["PV10/Well ($MM)"] or 0) * (r["Remaining Wells"] or 0)
-            for r in econ_rows if r.get("PV10/Well ($MM)") is not None
-        )
-        port_irr = portfolio_irr(all_undrilled_cf) if all_undrilled_cf else None
-
-        col_a, col_b, col_c = st.columns(3)
-        col_a.metric("Total Undrilled NPV",  f"${total_undrilled_npv/1e6:.1f}MM")
-        col_b.metric("Total Undrilled PV10", f"${total_undrilled_pv10:.1f}MM")
-        col_c.metric("Portfolio IRR",
-                     f"{port_irr*100:.1f}%" if port_irr is not None else "N/A")
-
-        # Formation economics table
-        st.markdown("#### Undrilled Location Economics by Formation")
-        if econ_rows:
-            st.dataframe(pd.DataFrame(econ_rows), use_container_width=True, hide_index=True)
-
-        # Waterfall chart
-        if formation_npvs:
-            existing_npv = 0.0
-            if "all_cashflows" in dir():
-                pass  # would need to thread through; approximate as 0 for now
-            st.plotly_chart(
-                npv_waterfall(formation_npvs, existing_npv),
-                use_container_width=True,
+        if not st.session_state.formation_name_map:
+            st.info(
+                "Visit the **Type Curve & Locations** tab first and configure the comp set for each "
+                "formation you want to evaluate. Economics will compute using the default comp set "
+                "(same formation name) if you skip that step."
             )
 
-        # Tornado sensitivity (vary each input ±20%, recompute portfolio NPV)
-        st.markdown("#### NPV Sensitivity (±20%)")
-        sensitivity_inputs = {
-            "Oil Price":  ("oil_price",   cfg["oil_price"]),
-            "Gas Price":  ("gas_price",   cfg["gas_price"]),
-            "D&C Cost":   ("dc_costs",    None),          # special handling
-            "LOE":        ("loe_per_boe", cfg["loe_per_boe"]),
-            "NRI":        ("nri",         cfg["nri"]),
-        }
+        try:
+            with st.spinner("Computing undrilled well economics…"):
+                econ_rows = []
+                formation_npvs = {}
+                all_undrilled_cf = []
 
-        sens_rows = []
-        base_npv  = total_undrilled_npv
-
-        for label, (key, base_val) in sensitivity_inputs.items():
-            if key == "dc_costs":
-                # Vary all formation D&C costs by ±20%
-                low_cfg  = {**cfg, "dc_costs": {f: v * 0.80 for f, v in cfg["dc_costs"].items()}}
-                high_cfg = {**cfg, "dc_costs": {f: v * 1.20 for f, v in cfg["dc_costs"].items()}}
-            else:
-                low_cfg  = {**cfg, key: base_val * 0.80}
-                high_cfg = {**cfg, key: base_val * 1.20}
-
-            _fname_map = dict(st.session_state.formation_name_map)
-
-            def _quick_npv(alt_cfg, rem_df=rem_df, _center_lat=center_lat, _center_lon=center_lon):
-                total = 0.0
-                wells_json_s = wells_df.to_json(orient="split", date_format="iso")
-                prod_json_s  = prod_df.to_json(orient="split", date_format="iso")
-                apis_tuple   = tuple(sorted(section_apis))
                 for _, row in rem_df.iterrows():
-                    n = int(row["Remaining"])
-                    if n == 0:
+                    formation   = row["Formation"]
+                    n_remaining = int(row["Remaining"])
+                    if n_remaining == 0:
                         continue
-                    formation = row["Formation"]
-                    fnames_s  = _fname_map.get(formation, [formation])
-                    if not fnames_s:
+
+                    fnames = st.session_state.formation_name_map.get(formation, [formation])
+                    if not fnames:
+                        econ_rows.append({
+                            "Formation": formation, "Remaining Wells": n_remaining,
+                            "NPV/Well ($MM)": None, "IRR/Well (%)": None,
+                            "Payout/Well (mo)": None, "PV10/Well ($MM)": None,
+                            "Total NPV ($MM)": None, "Type Curve Wells": 0,
+                            "Note": "No comp set — configure in Type Curve tab",
+                        })
                         continue
-                    # Reuse cached type curve — production offset filter args unchanged
-                    tc_s, _ = _cached_type_curve(
-                        wells_json_s, prod_json_s, formation,
-                        _center_lat, _center_lon,
-                        alt_cfg["offset_radius_mi"], alt_cfg["max_well_age_yr"], apis_tuple,
-                        tuple(sorted(fnames_s)),
+
+                    tc, _ = _cached_type_curve(
+                        wells_df.to_json(orient="split", date_format="iso"),
+                        prod_df.to_json(orient="split", date_format="iso"),
+                        formation, center_lat, center_lon,
+                        cfg["offset_radius_mi"], cfg["max_well_age_yr"],
+                        tuple(sorted(section_apis)),
+                        tuple(sorted(fnames)),
                     )
-                    if tc_s["n_wells"] == 0:
+                    p50 = tc["p50"]
+
+                    if tc["n_wells"] == 0 or np.all(np.isnan(p50)):
+                        econ_rows.append({
+                            "Formation": formation, "Remaining Wells": n_remaining,
+                            "NPV/Well ($MM)": None, "IRR/Well (%)": None,
+                            "Payout/Well (mo)": None, "PV10/Well ($MM)": None,
+                            "Total NPV ($MM)": None, "Type Curve Wells": 0,
+                            "Note": "No qualifying offset wells found",
+                        })
                         continue
-                    cf_s = build_undrilled_well_cashflow(tc_s["p50"], alt_cfg, formation)
-                    e_s  = well_economics(cf_s, alt_cfg["discount_rate"])
-                    total += (e_s["npv"] or 0) * n
-                return total
 
-            with st.spinner(f"Sensitivity: {label}…"):
-                low_npv  = _quick_npv(low_cfg)
-                high_npv = _quick_npv(high_cfg)
+                    cf_one = build_undrilled_well_cashflow(p50, cfg, formation)
+                    econ   = well_economics(cf_one, cfg["discount_rate"])
 
-            sens_rows.append({
-                "label":    label,
-                "low_npv":  low_npv,
-                "base_npv": base_npv,
-                "high_npv": high_npv,
-            })
+                    npv_val  = econ["npv"]  if (econ["npv"]  is not None and np.isfinite(econ["npv"]))  else None
+                    pv10_val = econ["pv10"] if (econ["pv10"] is not None and np.isfinite(econ["pv10"])) else None
+                    irr_val  = econ["irr"]  if (econ["irr"]  is not None and np.isfinite(econ["irr"]))  else None
+                    total_npv = (npv_val or 0) * n_remaining
+                    formation_npvs[formation] = total_npv
 
-        if sens_rows:
-            st.plotly_chart(tornado_chart(sens_rows), use_container_width=True)
+                    for _ in range(n_remaining):
+                        all_undrilled_cf.append(cf_one)
+
+                    econ_rows.append({
+                        "Formation":        formation,
+                        "Remaining Wells":  n_remaining,
+                        "Type Curve Wells": tc["n_wells"],
+                        "NPV/Well ($MM)":   round(npv_val  / 1e6, 2) if npv_val  is not None else None,
+                        "IRR/Well (%)":     round(irr_val  * 100,  1) if irr_val  is not None else None,
+                        "Payout/Well (mo)": econ["payout"],
+                        "PV10/Well ($MM)":  round(pv10_val / 1e6, 2) if pv10_val is not None else None,
+                        "Total NPV ($MM)":  round(total_npv / 1e6, 2),
+                    })
+
+            # Grand total metrics
+            total_undrilled_npv  = sum(v for v in formation_npvs.values() if np.isfinite(v))
+            total_undrilled_pv10 = sum(
+                (r["PV10/Well ($MM)"] or 0) * (r["Remaining Wells"] or 0)
+                for r in econ_rows if r.get("PV10/Well ($MM)") is not None
+            )
+            port_irr = portfolio_irr(all_undrilled_cf) if all_undrilled_cf else None
+
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric("Total Undrilled NPV",  f"${total_undrilled_npv/1e6:.1f}MM")
+            col_b.metric("Total Undrilled PV10", f"${total_undrilled_pv10:.1f}MM")
+            col_c.metric("Portfolio IRR",
+                         f"{port_irr*100:.1f}%" if port_irr is not None else "N/A")
+
+            st.markdown("#### Undrilled Location Economics by Formation")
+            if econ_rows:
+                st.dataframe(pd.DataFrame(econ_rows), use_container_width=True, hide_index=True)
+
+            if formation_npvs:
+                st.plotly_chart(
+                    npv_waterfall(formation_npvs, 0.0),
+                    use_container_width=True,
+                )
+
+            if formation_npvs:
+                st.markdown("#### NPV Sensitivity (±20%)")
+                sensitivity_inputs = {
+                    "Oil Price":  ("oil_price",   cfg["oil_price"]),
+                    "Gas Price":  ("gas_price",   cfg["gas_price"]),
+                    "D&C Cost":   ("dc_costs",    None),
+                    "LOE":        ("loe_per_boe", cfg["loe_per_boe"]),
+                    "NRI":        ("nri",         cfg["nri"]),
+                }
+
+                sens_rows = []
+                base_npv  = total_undrilled_npv
+                _fname_map = dict(st.session_state.formation_name_map)
+
+                for label, (key, base_val) in sensitivity_inputs.items():
+                    if key == "dc_costs":
+                        low_cfg  = {**cfg, "dc_costs": {f: v * 0.80 for f, v in cfg["dc_costs"].items()}}
+                        high_cfg = {**cfg, "dc_costs": {f: v * 1.20 for f, v in cfg["dc_costs"].items()}}
+                    else:
+                        low_cfg  = {**cfg, key: base_val * 0.80}
+                        high_cfg = {**cfg, key: base_val * 1.20}
+
+                    def _quick_npv(alt_cfg, _rem=rem_df, _clat=center_lat, _clon=center_lon, _fm=_fname_map):
+                        total = 0.0
+                        wj = wells_df.to_json(orient="split", date_format="iso")
+                        pj = prod_df.to_json(orient="split", date_format="iso")
+                        apis_t = tuple(sorted(section_apis))
+                        for _, r2 in _rem.iterrows():
+                            n2 = int(r2["Remaining"])
+                            if n2 == 0:
+                                continue
+                            fm2 = r2["Formation"]
+                            fn2 = _fm.get(fm2, [fm2])
+                            if not fn2:
+                                continue
+                            tc2, _ = _cached_type_curve(
+                                wj, pj, fm2, _clat, _clon,
+                                alt_cfg["offset_radius_mi"], alt_cfg["max_well_age_yr"],
+                                apis_t, tuple(sorted(fn2)),
+                            )
+                            if tc2["n_wells"] == 0:
+                                continue
+                            cf2 = build_undrilled_well_cashflow(tc2["p50"], alt_cfg, fm2)
+                            e2  = well_economics(cf2, alt_cfg["discount_rate"])
+                            v2  = e2["npv"]
+                            if v2 is not None and np.isfinite(v2):
+                                total += v2 * n2
+                        return total
+
+                    with st.spinner(f"Sensitivity: {label}…"):
+                        low_npv  = _quick_npv(low_cfg)
+                        high_npv = _quick_npv(high_cfg)
+
+                    sens_rows.append({
+                        "label":    label,
+                        "low_npv":  low_npv,
+                        "base_npv": base_npv,
+                        "high_npv": high_npv,
+                    })
+
+                if sens_rows:
+                    st.plotly_chart(tornado_chart(sens_rows), use_container_width=True)
+
+        except Exception as _e4:
+            st.error("An error occurred while computing undrilled economics.")
+            st.exception(_e4)
 
 # ── Raw data preview ───────────────────────────────────────────────────────
 with st.expander("🔍 Raw data preview", expanded=False):
