@@ -11,16 +11,21 @@ from config import FORMATIONS
 
 # Formation color palette (consistent across all charts)
 FORMATION_COLORS: dict[str, str] = {
-    "Wolfcamp A":      "#1f77b4",
-    "Wolfcamp B":      "#ff7f0e",
-    "Wolfcamp C":      "#2ca02c",
-    "Wolfcamp D":      "#d62728",
-    "3rd Bone Spring": "#9467bd",
-    "2nd Bone Spring": "#8c564b",
-    "1st Bone Spring": "#e377c2",
-    "Delaware Sand":   "#7f7f7f",
-    "Cherry Canyon":   "#bcbd22",
-    "Unknown":         "#17becf",
+    "Upper Avalon":           "#1f77b4",
+    "Middle Avalon":          "#4a90d9",
+    "Lower Avalon":           "#aec7e8",
+    "First Bone Spring":      "#9467bd",
+    "Second Bone Spring":     "#8c564b",
+    "Third Bone Spring":      "#e377c2",
+    "Third Bone Spring Sand": "#f7b6d2",
+    "Wolfcamp XY":            "#bcbd22",
+    "Wolfcamp A":             "#ff7f0e",
+    "Wolfcamp B":             "#d62728",
+    "Wolfcamp C":             "#2ca02c",
+    "Wolfcamp D":             "#17becf",
+    "Woodford":               "#7f7f7f",
+    "Other":                  "#c7c7c7",
+    "Unknown":                "#c7c7c7",
 }
 
 

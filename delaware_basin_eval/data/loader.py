@@ -104,6 +104,7 @@ def load_well_header(file) -> pd.DataFrame:
         )
 
     if "formation" in df.columns:
+        df["_raw_formation"] = df["formation"].astype(str).str.strip()
         df["formation"] = _normalize_formation(df["formation"])
 
     # Parse dates

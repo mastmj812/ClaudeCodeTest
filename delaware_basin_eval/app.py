@@ -97,6 +97,8 @@ def _init_state():
         "cfg": None,
         # per-formation offset name selections (canonical → list of raw names)
         "formation_name_map": {},
+        # user-defined formation mapping (raw ENVInterval value → canonical name)
+        "formation_mapping": {},
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -149,9 +151,67 @@ with st.sidebar:
                 )
                 st.rerun()
 
-    # 2. Section selection
+    # 2. Formation mapping
     if st.session_state.wells_df is not None:
-        with st.expander("📍 2. Select Section", expanded=st.session_state.section_wells is None):
+        mapping_done = bool(st.session_state.formation_mapping)
+        with st.expander("🏷️ 2. Formation Mapping", expanded=not mapping_done):
+            st.caption(
+                "Assign each formation name in your data to a canonical zone. "
+                "Use the **Maps to** dropdown on each row — then click **Apply**."
+            )
+            raw_formations = sorted(
+                st.session_state.wells_df["_raw_formation"].dropna().unique().tolist()
+            ) if "_raw_formation" in st.session_state.wells_df.columns else sorted(
+                st.session_state.wells_df["formation"].dropna().unique().tolist()
+            )
+            canonical_options = FORMATIONS + ["Other"]
+            existing = st.session_state.formation_mapping
+
+            rows = []
+            for raw in raw_formations:
+                if raw in existing:
+                    mapped = existing[raw]
+                elif raw in FORMATIONS:
+                    mapped = raw
+                else:
+                    from config import FORMATION_ALIASES as _FA
+                    mapped = _FA.get(raw.lower().strip(), "Other")
+                    if mapped not in canonical_options:
+                        mapped = "Other"
+                rows.append({"Formation in your data": raw, "Maps to": mapped})
+
+            edited = st.data_editor(
+                pd.DataFrame(rows),
+                column_config={
+                    "Formation in your data": st.column_config.TextColumn(disabled=True),
+                    "Maps to": st.column_config.SelectboxColumn(
+                        options=canonical_options,
+                        required=True,
+                    ),
+                },
+                hide_index=True,
+                use_container_width=True,
+                key="formation_mapping_editor",
+            )
+
+            if st.button("Apply Mapping", type="primary", use_container_width=True):
+                mapping = dict(zip(edited["Formation in your data"], edited["Maps to"]))
+                st.session_state.formation_mapping = mapping
+                raw_col = "_raw_formation" if "_raw_formation" in st.session_state.wells_df.columns else "formation"
+                st.session_state.wells_df["formation"] = (
+                    st.session_state.wells_df[raw_col]
+                    .astype(str)
+                    .map(lambda x: mapping.get(x, x))
+                )
+                st.session_state.section_wells = None
+                st.session_state.section_prod  = None
+                st.session_state.formation_name_map = {}
+                st.success("Mapping applied. Re-select your section.")
+                st.rerun()
+
+    # 3. Section selection
+    if st.session_state.wells_df is not None:
+        with st.expander("📍 3. Select Section", expanded=st.session_state.section_wells is None):
             section_id = st.text_input(
                 "Section identifier",
                 placeholder="e.g.  T1S R26E Sec 15  or  Abstract 1234",
@@ -202,9 +262,9 @@ with st.sidebar:
                     )
                     st.rerun()
 
-    # 3. Offset filter
+    # 4. Offset filter
     if st.session_state.section_wells is not None:
-        with st.expander("🔍 3. Offset Filter"):
+        with st.expander("🔍 4. Offset Filter"):
             offset_radius = st.slider(
                 "Offset radius (miles)", 1, 25,
                 int(DEFAULT_OFFSET_RADIUS_MI), 1,
@@ -214,17 +274,17 @@ with st.sidebar:
                 DEFAULT_MAX_WELL_AGE_YR, 1,
             )
 
-    # 4. Price deck
+    # 5. Price deck
     if st.session_state.section_wells is not None:
-        with st.expander("💲 4. Price Deck"):
+        with st.expander("💲 5. Price Deck"):
             oil_price  = st.number_input("Oil ($/BBL)",    value=DEFAULT_PRICE_DECK["oil_price"],  step=1.0)
             gas_price  = st.number_input("Gas ($/MMBTU)",  value=DEFAULT_PRICE_DECK["gas_price"],  step=0.10)
             ngl_yield  = st.number_input("NGL yield (BBL/MMCF)", value=DEFAULT_PRICE_DECK["ngl_yield"], step=1.0)
             ngl_price  = st.number_input("NGL ($/BBL)",    value=DEFAULT_PRICE_DECK["ngl_price"],  step=1.0)
 
-    # 5. Revenue deductions
+    # 6. Revenue deductions
     if st.session_state.section_wells is not None:
-        with st.expander("📉 5. Revenue Deductions"):
+        with st.expander("📉 6. Revenue Deductions"):
             nri            = st.slider("NRI", 0.60, 0.90, float(DEFAULT_DEDUCTIONS["nri"]), 0.01)
             oil_sev        = st.number_input("Oil severance (%)",
                                              value=DEFAULT_DEDUCTIONS["oil_severance"] * 100, step=0.1) / 100
@@ -233,9 +293,9 @@ with st.sidebar:
             ad_val         = st.number_input("Ad valorem (%)",
                                              value=DEFAULT_DEDUCTIONS["ad_valorem"] * 100, step=0.1) / 100
 
-    # 6. Well costs (D&C by formation)
+    # 7. Well costs (D&C by formation)
     if st.session_state.section_wells is not None:
-        with st.expander("🏗️ 6. Well Costs (D&C $MM)"):
+        with st.expander("🏗️ 7. Well Costs (D&C $MM)"):
             dc_cost_rows = [{"Formation": f, "D&C Cost ($MM)": DEFAULT_DC_COSTS[f]} for f in FORMATIONS]
             dc_df = st.data_editor(
                 pd.DataFrame(dc_cost_rows),
@@ -245,9 +305,9 @@ with st.sidebar:
             )
             dc_costs = dict(zip(dc_df["Formation"], dc_df["D&C Cost ($MM)"]))
 
-    # 7. LOE, discount, spacing
+    # 8. LOE, discount, spacing
     if st.session_state.section_wells is not None:
-        with st.expander("⚙️ 7. LOE, Discount & Spacing"):
+        with st.expander("⚙️ 8. LOE, Discount & Spacing"):
             loe_per_boe    = st.number_input("LOE ($/BOE/month)", value=DEFAULT_LOE_PER_BOE, step=0.50)
             discount_rate  = st.number_input("Discount rate (%)", value=DEFAULT_DISCOUNT_RATE * 100, step=0.5) / 100
             lateral_length = st.number_input("Assumed lateral length (ft)", value=10000, step=500)
