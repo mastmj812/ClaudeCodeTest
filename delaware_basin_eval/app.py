@@ -43,6 +43,38 @@ def _cached_fit_wells(section_wells_json: str, section_prod_json: str):
 
 
 @st.cache_data(show_spinner=False)
+def _cached_map_offsets(
+    wells_json: str,
+    formation_names_tuple: tuple,
+    center_lat: float,
+    center_lon: float,
+    radius_miles: float,
+    section_apis_tuple: tuple,
+) -> pd.DataFrame:
+    """
+    Return all formation-matching wells within radius for map display.
+    No age or lateral-length filtering — shows maximum context on the map.
+    """
+    from utils.geo import haversine_miles
+    wells_df = pd.read_json(io.StringIO(wells_json), orient="split")
+    if "api" in wells_df.columns:
+        wells_df["api"] = wells_df["api"].astype(str).str.zfill(14)
+    for col in ["first_prod_date", "spud_date"]:
+        if col in wells_df.columns:
+            wells_df[col] = pd.to_datetime(wells_df[col], errors="coerce")
+
+    df = wells_df[wells_df["formation"].fillna("").isin(list(formation_names_tuple))].copy()
+    df = df[~df["api"].isin(set(section_apis_tuple))]
+
+    valid = df.dropna(subset=["latitude", "longitude"])
+    if valid.empty:
+        return valid.reset_index(drop=True)
+
+    dists = haversine_miles(center_lat, center_lon, valid["latitude"].values, valid["longitude"].values)
+    return valid[dists <= radius_miles].reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False)
 def _cached_type_curve(
     wells_json: str, prod_json: str,
     formation: str,
@@ -596,9 +628,20 @@ with tab3:
         if not offset_names and not effective_fnames:
             st.info("Select at least one formation name in the comp set to build a type curve.")
 
-        # Map — always shows formation-specific offset wells for the selected formation
+        # Map uses a relaxed filter (formation + radius only, no age/lateral cutoffs)
+        # so all known offset wells are visible regardless of type-curve eligibility
+        _map_fnames = effective_fnames if effective_fnames else [selected_formation]
+        _wells_json = wells_df.to_json(orient="split", date_format="iso")
+        _section_apis_t = tuple(sorted(section_wells["api"].tolist()))
+        map_offsets = _cached_map_offsets(
+            _wells_json,
+            tuple(sorted(_map_fnames)),
+            center_lat, center_lon,
+            cfg["offset_radius_mi"],
+            _section_apis_t,
+        )
         st.plotly_chart(
-            section_map(section_wells, offset_wells=offsets if offsets is not None else None),
+            section_map(section_wells, offset_wells=map_offsets if not map_offsets.empty else None),
             use_container_width=True,
         )
 
