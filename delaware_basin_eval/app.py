@@ -3,7 +3,6 @@ Delaware Basin Property Evaluator
 Main Streamlit entry point.
 """
 
-import io
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -23,28 +22,27 @@ from config import (
 
 
 # ── Cached heavy computations ──────────────────────────────────────────────
+# Cache key strategy: each cached function takes `data_version` (an int from
+# session state) as its first arg. The integer is bumped whenever the
+# underlying DataFrames change (load, formation mapping apply, section
+# change), which invalidates all entries derived from those DataFrames.
+# Inside the function we read from st.session_state directly — for the same
+# data_version the state is guaranteed identical, so caching is sound and
+# we avoid the JSON serialize/re-parse roundtrip on every call.
+
 @st.cache_data(show_spinner=False)
-def _cached_fit_wells(section_wells_json: str, section_prod_json: str):
-    """Cache decline curve fits — only re-runs when section changes."""
+def _cached_fit_wells(data_version: int):
+    """Cache decline curve fits for the current section."""
     from engineering.decline import fit_all_section_wells
-    sw = pd.read_json(io.StringIO(section_wells_json), orient="split")
-    sp = pd.read_json(io.StringIO(section_prod_json), orient="split")
-    # JSON parsing may read all-digit API strings as integers — restore as zero-padded strings
-    for df in [sw, sp]:
-        if "api" in df.columns:
-            df["api"] = df["api"].astype(str).str.zfill(14)
-    # Re-parse dates after JSON round-trip
-    for col in ["first_prod_date", "spud_date"]:
-        if col in sw.columns:
-            sw[col] = pd.to_datetime(sw[col], errors="coerce")
-    if "prod_date" in sp.columns:
-        sp["prod_date"] = pd.to_datetime(sp["prod_date"], errors="coerce")
-    return fit_all_section_wells(sw, sp)
+    return fit_all_section_wells(
+        st.session_state.section_wells,
+        st.session_state.section_prod,
+    )
 
 
 @st.cache_data(show_spinner=False)
 def _cached_map_offsets(
-    wells_json: str,
+    data_version: int,
     formation_names_tuple: tuple,
     center_lat: float,
     center_lon: float,
@@ -56,12 +54,7 @@ def _cached_map_offsets(
     No age or lateral-length filtering — shows maximum context on the map.
     """
     from utils.geo import haversine_miles
-    wells_df = pd.read_json(io.StringIO(wells_json), orient="split")
-    if "api" in wells_df.columns:
-        wells_df["api"] = wells_df["api"].astype(str).str.zfill(14)
-    for col in ["first_prod_date", "spud_date"]:
-        if col in wells_df.columns:
-            wells_df[col] = pd.to_datetime(wells_df[col], errors="coerce")
+    wells_df = st.session_state.wells_df
 
     df = wells_df[wells_df["formation"].fillna("").isin(list(formation_names_tuple))].copy()
     df = df[~df["api"].isin(set(section_apis_tuple))]
@@ -76,7 +69,7 @@ def _cached_map_offsets(
 
 @st.cache_data(show_spinner=False)
 def _cached_formation_well_counts(
-    wells_json: str,
+    data_version: int,
     center_lat: float,
     center_lon: float,
     radius_miles: float,
@@ -88,12 +81,7 @@ def _cached_formation_well_counts(
     in the offset radius. Uses the same filter criteria as get_offset_wells().
     """
     from engineering.type_curve import get_offset_wells
-    wells_df = pd.read_json(io.StringIO(wells_json), orient="split")
-    if "api" in wells_df.columns:
-        wells_df["api"] = wells_df["api"].astype(str).str.zfill(14)
-    for col in ["first_prod_date", "spud_date"]:
-        if col in wells_df.columns:
-            wells_df[col] = pd.to_datetime(wells_df[col], errors="coerce")
+    wells_df = st.session_state.wells_df
 
     section_apis = set(section_apis_tuple)
     counts = {}
@@ -109,7 +97,7 @@ def _cached_formation_well_counts(
 
 @st.cache_data(show_spinner=False)
 def _cached_type_curve(
-    wells_json: str, prod_json: str,
+    data_version: int,
     formation: str,
     center_lat: float, center_lon: float,
     radius_miles: float, max_well_age_yr: int,
@@ -118,17 +106,8 @@ def _cached_type_curve(
 ):
     """Cache type curve per formation + filter settings."""
     from engineering.type_curve import get_offset_wells, build_type_curve
-    wells_df = pd.read_json(io.StringIO(wells_json), orient="split")
-    prod_df  = pd.read_json(io.StringIO(prod_json),  orient="split")
-    # JSON parsing may read all-digit API strings as integers — restore as zero-padded strings
-    for df in [wells_df, prod_df]:
-        if "api" in df.columns:
-            df["api"] = df["api"].astype(str).str.zfill(14)
-    for col in ["first_prod_date", "spud_date"]:
-        if col in wells_df.columns:
-            wells_df[col] = pd.to_datetime(wells_df[col], errors="coerce")
-    if "prod_date" in prod_df.columns:
-        prod_df["prod_date"] = pd.to_datetime(prod_df["prod_date"], errors="coerce")
+    wells_df = st.session_state.wells_df
+    prod_df  = st.session_state.prod_df
     offsets = get_offset_wells(
         wells_df, list(formation_names_tuple), center_lat, center_lon,
         radius_miles, max_well_age_yr, set(section_apis_tuple),
@@ -182,6 +161,9 @@ def _init_state():
         "well_params_override": {},
         # per-formation type curve params {formation → {oil, gas, water: {qi, di_annual, b, dt_annual, ramp_months, q_ramp}}}
         "tc_params": {},
+        # bumped whenever wells_df / prod_df / section_wells / section_prod change;
+        # used as the cache key for _cached_* functions so they invalidate on data change
+        "data_version": 0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -228,6 +210,7 @@ with st.sidebar:
                         st.stop()
                 st.session_state.section_wells = None
                 st.session_state.section_prod  = None
+                st.session_state.data_version += 1
                 st.success(
                     f"Loaded {len(st.session_state.wells_df):,} wells · "
                     f"{len(st.session_state.prod_df):,} production rows"
@@ -289,6 +272,7 @@ with st.sidebar:
                 st.session_state.section_wells = None
                 st.session_state.section_prod  = None
                 st.session_state.formation_name_map = {}
+                st.session_state.data_version += 1
                 st.success("Mapping applied. Re-select your section.")
                 st.rerun()
 
@@ -340,6 +324,7 @@ with st.sidebar:
                     st.session_state.section_wells  = section_wells
                     st.session_state.section_prod   = section_prod
                     st.session_state.section_acreage = acreage
+                    st.session_state.data_version  += 1
                     st.success(
                         f"{len(section_wells)} wells found · {acreage:,.0f} acres"
                     )
@@ -544,10 +529,7 @@ with tab2:
         from config import TERMINAL_DI_ANNUAL, MAX_PROJECTION_MONTHS
 
         with st.spinner("Fitting decline curves…"):
-            decline_results = _cached_fit_wells(
-                section_wells.to_json(orient="split", date_format="iso"),
-                section_prod.to_json(orient="split", date_format="iso"),
-            )
+            decline_results = _cached_fit_wells(st.session_state.data_version)
 
         overrides = st.session_state.well_params_override
 
@@ -710,8 +692,7 @@ with tab3:
         center_lat = valid_sw["latitude"].mean() if not valid_sw.empty else 31.5
         center_lon = valid_sw["longitude"].mean() if not valid_sw.empty else -104.0
         _section_apis_t = tuple(sorted(section_wells["api"].tolist()))
-        _wells_json = wells_df.to_json(orient="split", date_format="iso")
-        _prod_json  = prod_df.to_json(orient="split", date_format="iso")
+        _data_version = st.session_state.data_version
 
         # ── Formation selector + comp set ────────────────────────────────────
         sel_col, comp_col = st.columns([2, 3])
@@ -740,7 +721,7 @@ with tab3:
         with map_col:
             _map_fnames = effective_fnames if effective_fnames else [selected_formation]
             map_offsets = _cached_map_offsets(
-                _wells_json, tuple(sorted(_map_fnames)),
+                _data_version, tuple(sorted(_map_fnames)),
                 center_lat, center_lon, cfg["offset_radius_mi"], _section_apis_t,
             )
             st.plotly_chart(
@@ -756,7 +737,7 @@ with tab3:
         with count_col:
             with st.spinner("Counting offset wells by formation…"):
                 well_counts = _cached_formation_well_counts(
-                    _wells_json, center_lat, center_lon,
+                    _data_version, center_lat, center_lon,
                     cfg["offset_radius_mi"], cfg["max_well_age_yr"], _section_apis_t,
                 )
             st.plotly_chart(
@@ -769,7 +750,7 @@ with tab3:
         if effective_fnames:
             with st.spinner(f"Building {selected_formation} type curve…"):
                 tc, offsets = _cached_type_curve(
-                    _wells_json, _prod_json,
+                    _data_version,
                     selected_formation, center_lat, center_lon,
                     cfg["offset_radius_mi"], cfg["max_well_age_yr"],
                     _section_apis_t, tuple(sorted(effective_fnames)),
@@ -1000,8 +981,7 @@ with tab4:
                         continue
 
                     tc, _ = _cached_type_curve(
-                        wells_df.to_json(orient="split", date_format="iso"),
-                        prod_df.to_json(orient="split", date_format="iso"),
+                        st.session_state.data_version,
                         formation, center_lat, center_lon,
                         cfg["offset_radius_mi"], cfg["max_well_age_yr"],
                         tuple(sorted(section_apis)),
@@ -1111,13 +1091,13 @@ with tab4:
                         high_cfg = {**cfg, key: base_val * 1.20}
 
                     _tc_params_snap = dict(st.session_state.tc_params)
+                    _data_version_snap = st.session_state.data_version
+                    _apis_t_snap = tuple(sorted(section_apis))
 
                     def _quick_npv(alt_cfg, _rem=rem_df, _clat=center_lat, _clon=center_lon,
-                                   _fm=_fname_map, _tcp=_tc_params_snap):
+                                   _fm=_fname_map, _tcp=_tc_params_snap,
+                                   _dv=_data_version_snap, _apis_t=_apis_t_snap):
                         total = 0.0
-                        wj = wells_df.to_json(orient="split", date_format="iso")
-                        pj = prod_df.to_json(orient="split", date_format="iso")
-                        apis_t = tuple(sorted(section_apis))
                         for _, r2 in _rem.iterrows():
                             n2 = int(r2["Remaining"])
                             if n2 == 0:
@@ -1127,9 +1107,9 @@ with tab4:
                             if not fn2:
                                 continue
                             tc2, _ = _cached_type_curve(
-                                wj, pj, fm2, _clat, _clon,
+                                _dv, fm2, _clat, _clon,
                                 alt_cfg["offset_radius_mi"], alt_cfg["max_well_age_yr"],
-                                apis_t, tuple(sorted(fn2)),
+                                _apis_t, tuple(sorted(fn2)),
                             )
                             if tc2["n_wells"] == 0:
                                 continue
