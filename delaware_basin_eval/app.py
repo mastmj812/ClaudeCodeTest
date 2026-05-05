@@ -582,17 +582,26 @@ with tab2:
             })
 
             if res.get("actual_months") and len(res["actual_months"]) > 0:
-                # Regenerate proj_rates from (possibly overridden) params for chart
                 if res["success"]:
-                    proj_vols = generate_stream_profile(
-                        qi=res["qi"], di_annual=res["Di_monthly"] * 12,
-                        b=res["b"], dt_annual=TERMINAL_DI_ANNUAL,
-                        ramp_months=0, n_months=MAX_PROJECTION_MONTHS,
-                    )
-                    proj_rates = proj_vols / 30.44
                     n_actual = len(res["actual_months"])
-                    proj_months_chart = [n_actual + i for i in range(len(proj_rates))]
-                    proj_rates_chart = proj_rates.tolist()
+                    if ov:
+                        # For overridden wells: generate n_actual + extra months from t=0,
+                        # then slice from n_actual to get the forward projection only.
+                        # This continues the decline from where the well currently sits
+                        # on the overridden curve, not from a fresh qi=peak start.
+                        all_vols = generate_stream_profile(
+                            qi=res["qi"], di_annual=res["Di_monthly"] * 12,
+                            b=res["b"], dt_annual=TERMINAL_DI_ANNUAL,
+                            ramp_months=0, n_months=n_actual + MAX_PROJECTION_MONTHS,
+                        )
+                        proj_vols_fwd = all_vols[n_actual:]
+                        proj_months_chart = list(range(n_actual, n_actual + len(proj_vols_fwd)))
+                        proj_rates_chart = (proj_vols_fwd / 30.44).tolist()
+                    else:
+                        # Non-overridden: use the pre-computed projection from fit_decline,
+                        # which already starts from the last actual data point.
+                        proj_months_chart = list(res["proj_months"]) if res["proj_months"] is not None else None
+                        proj_rates_chart  = list(res["proj_rates"])  if res["proj_rates"]  is not None else None
                 else:
                     proj_months_chart = None
                     proj_rates_chart = None
