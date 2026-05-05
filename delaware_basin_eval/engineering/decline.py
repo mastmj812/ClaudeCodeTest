@@ -162,11 +162,15 @@ def _calc_eur(qi: float, Di: float, b: float, existing_cum=None) -> float:
     if Di > terminal_Di_monthly:
         t_switch = (Di / terminal_Di_monthly - 1.0) / (b * Di)
         q_switch = _hyperbolic(t_switch, qi, Di, b)
-        # Integral of hyperbolic from 0 to t_switch:
-        # ∫₀ᵀ qi*(1+b*Di*t)^(-1/b) dt = qi/((b-1)*Di) * [(1+b*Di*T)^(1-1/b) - 1]
-        cum_hyp = (qi / ((b - 1) * Di)) * (
-            (1 + b * Di * t_switch) ** (1 - 1 / b) - 1
-        ) * 30.44
+        # Integral of hyperbolic from 0 to t_switch.
+        # For b ≠ 1: qi/((b-1)*Di) * [(1+b*Di*T)^(1-1/b) - 1]
+        # For b → 1: (qi/Di) * ln(1+Di*T)   ← limit form, avoids /0
+        if abs(b - 1.0) < 1e-3:
+            cum_hyp = (qi / Di) * np.log(1.0 + Di * t_switch) * 30.44
+        else:
+            cum_hyp = (qi / ((b - 1) * Di)) * (
+                (1 + b * Di * t_switch) ** (1 - 1 / b) - 1
+            ) * 30.44
         # Integral of exponential from t_switch to ∞
         cum_exp = (q_switch / terminal_Di_monthly) * 30.44
         return cum_hyp + cum_exp
