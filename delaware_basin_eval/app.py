@@ -148,6 +148,16 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+st.markdown("""
+<style>
+section[data-testid="stSidebar"] > div:first-child {
+    overflow-y: auto;
+    max-height: 100vh;
+    padding-bottom: 3rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
 
 # ── Session state defaults ─────────────────────────────────────────────────
 def _init_state():
