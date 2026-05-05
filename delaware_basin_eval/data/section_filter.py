@@ -36,10 +36,10 @@ def _parse_section_id(text: str) -> dict:
     text = text.strip()
     parts: dict[str, str] = {}
 
-    # Abstract
-    m = re.search(r"\babs(?:tract)?\s*[#:]?\s*(\d+)", text, re.IGNORECASE)
+    # Abstract — supports numeric (123) and alphanumeric (U72) identifiers
+    m = re.search(r"\babs(?:tract)?\s*[#:]?\s*([A-Za-z0-9]+)", text, re.IGNORECASE)
     if m:
-        parts["abstract"] = m.group(1).zfill(4)
+        parts["abstract"] = m.group(1).upper()
 
     # Section
     m = re.search(r"\bse?c(?:tion)?\s*[#:]?\s*(\d+)", text, re.IGNORECASE)
@@ -62,6 +62,13 @@ def _parse_section_id(text: str) -> dict:
         parts["section"]  = m.group(1).zfill(2)
         parts["township"] = m.group(2).zfill(3)
         parts["range"]    = m.group(3).zfill(3)
+
+    # Bare abstract fallback: if nothing matched and input looks like a standalone
+    # abstract ID — e.g. "U72", "U73", "123" (letter-prefix or pure digits)
+    if not parts:
+        m = re.match(r"^([A-Za-z]?\s*\d+)$", text.strip())
+        if m:
+            parts["abstract"] = re.sub(r"\s+", "", m.group(1)).upper()
 
     return parts
 
