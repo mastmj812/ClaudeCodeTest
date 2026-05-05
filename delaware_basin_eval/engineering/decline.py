@@ -216,6 +216,7 @@ def generate_stream_profile(
     dt_annual: float,
     ramp_months: int,
     n_months: int,
+    q_ramp: float = 0.0,
     days_per_month: float = 30.44,
 ) -> np.ndarray:
     """
@@ -228,7 +229,8 @@ def generate_stream_profile(
     b           : Arps b-factor
     dt_annual   : terminal annual decline rate (decimal) — switches from hyperbolic
                   to exponential when instantaneous Di reaches this level
-    ramp_months : months of flat production at qi before decline begins
+    ramp_months : months in the linear ramp from q_ramp → qi before decline begins
+    q_ramp      : starting rate at month 0 of the ramp (0 = well comes on at zero)
     n_months    : total profile length to return
     days_per_month : days per month for rate→volume conversion
 
@@ -248,7 +250,9 @@ def generate_stream_profile(
 
     for month in range(n_months):
         if month < ramp_months:
-            rate = qi
+            # Linear ramp: q_ramp at month 0, qi at month (ramp_months-1)
+            frac = month / max(ramp_months - 1, 1)
+            rate = q_ramp + (qi - q_ramp) * frac
         else:
             decline_t += 1.0
             if decline_t <= t_switch:

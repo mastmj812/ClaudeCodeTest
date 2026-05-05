@@ -15,7 +15,7 @@ import pandas as pd
 from engineering.normalization import normalize_production
 from engineering.decline import fit_decline, generate_stream_profile
 from utils.geo import haversine_miles
-from config import NORM_LATERAL_FT, TERMINAL_DI_ANNUAL, B_FACTOR_CAP
+from config import NORM_LATERAL_FT, TERMINAL_DI_ANNUAL, B_FACTOR_CAP, MIN_MONTHS_FOR_FIT
 
 
 def get_offset_wells(
@@ -88,6 +88,8 @@ def build_type_curve(
     empty_result = {
         "p10": empty.copy(), "p50": empty.copy(), "p90": empty.copy(),
         "gas_p50": empty.copy(), "water_p50": empty.copy(),
+        "cum_p10": empty.copy(), "cum_p50": empty.copy(), "cum_p90": empty.copy(),
+        "cum_gas_p50": empty.copy(), "cum_water_p50": empty.copy(),
         "traces": [], "n_wells": 0, "excluded": 0, "median_lateral": 0.0,
         "suggested_params": _default_suggested_params(),
     }
@@ -135,7 +137,12 @@ def build_type_curve(
         oil_matrix[idx, :n] = norm_oil[:n]
         laterals.append(lat_ft)
 
-        oil_fit = fit_decline(oil_rates, months)
+        # Skip month 0 for fitting when possible — first prod month is often
+        # partial (1-31 days) and inflates or deflates the apparent qi.
+        if len(oil_rates) > MIN_MONTHS_FOR_FIT:
+            oil_fit = fit_decline(oil_rates[1:], months[1:])
+        else:
+            oil_fit = fit_decline(oil_rates, months)
         if oil_fit["success"]:
             norm_qi = oil_fit["qi"] * (NORM_LATERAL_FT / lat_ft)
             oil_fits.append({
@@ -159,7 +166,10 @@ def build_type_curve(
                 if norm_gas is not None:
                     ng = min(len(norm_gas), max_months)
                     gas_matrix[idx, :ng] = norm_gas[:ng]
-                    gas_fit = fit_decline(gas_rates, months)
+                    if len(gas_rates) > MIN_MONTHS_FOR_FIT:
+                        gas_fit = fit_decline(gas_rates[1:], months[1:])
+                    else:
+                        gas_fit = fit_decline(gas_rates, months)
                     if gas_fit["success"]:
                         norm_qi_g = gas_fit["qi"] * (NORM_LATERAL_FT / lat_ft)
                         gas_fits.append({
@@ -177,7 +187,10 @@ def build_type_curve(
                 if norm_water is not None:
                     nw = min(len(norm_water), max_months)
                     water_matrix[idx, :nw] = norm_water[:nw]
-                    water_fit = fit_decline(water_rates, months)
+                    if len(water_rates) > MIN_MONTHS_FOR_FIT:
+                        water_fit = fit_decline(water_rates[1:], months[1:])
+                    else:
+                        water_fit = fit_decline(water_rates, months)
                     if water_fit["success"]:
                         norm_qi_w = water_fit["qi"] * (NORM_LATERAL_FT / lat_ft)
                         water_fits.append({
@@ -197,12 +210,24 @@ def build_type_curve(
         empty_result["excluded"] = excluded
         return empty_result
 
+    _dpm = 30.44
     with np.errstate(all="ignore"):
         p10 = np.nanpercentile(oil_matrix,   10, axis=0)
         p50 = np.nanpercentile(oil_matrix,   50, axis=0)
         p90 = np.nanpercentile(oil_matrix,   90, axis=0)
         gas_p50   = np.nanpercentile(gas_matrix,   50, axis=0)
         water_p50 = np.nanpercentile(water_matrix, 50, axis=0)
+
+        # Cumulative per-well arrays (BBL per 10k ft) — percentile of cumulative
+        # is statistically correct (not cumsum of percentile-of-rates)
+        cum_oil   = np.nancumsum(oil_matrix   * _dpm, axis=1)
+        cum_gas   = np.nancumsum(gas_matrix   * _dpm, axis=1)
+        cum_water = np.nancumsum(water_matrix * _dpm, axis=1)
+        cum_p10       = np.nanpercentile(cum_oil,   10, axis=0)
+        cum_p50       = np.nanpercentile(cum_oil,   50, axis=0)
+        cum_p90       = np.nanpercentile(cum_oil,   90, axis=0)
+        cum_gas_p50   = np.nanpercentile(cum_gas,   50, axis=0)
+        cum_water_p50 = np.nanpercentile(cum_water, 50, axis=0)
 
     p50 = _rolling_median(p50, window=3)
 
@@ -214,6 +239,11 @@ def build_type_curve(
         "p90":             p90,
         "gas_p50":         gas_p50,
         "water_p50":       water_p50,
+        "cum_p10":         cum_p10,
+        "cum_p50":         cum_p50,
+        "cum_p90":         cum_p90,
+        "cum_gas_p50":     cum_gas_p50,
+        "cum_water_p50":   cum_water_p50,
         "traces":          traces,
         "n_wells":         int(oil_matrix.shape[0]),
         "excluded":        excluded,
@@ -224,9 +254,9 @@ def build_type_curve(
 
 def _default_suggested_params() -> dict:
     return {
-        "oil":   {"qi": 500.0, "di_annual": 0.80, "b": 1.2, "dt_annual": TERMINAL_DI_ANNUAL},
-        "gas":   {"qi": 750.0, "di_annual": 0.80, "b": 1.2, "dt_annual": TERMINAL_DI_ANNUAL},
-        "water": {"qi": 200.0, "di_annual": 0.60, "b": 1.0, "dt_annual": TERMINAL_DI_ANNUAL},
+        "oil":   {"qi": 500.0, "di_annual": 0.80, "b": 1.2, "dt_annual": TERMINAL_DI_ANNUAL, "q_ramp": 0.0},
+        "gas":   {"qi": 750.0, "di_annual": 0.80, "b": 1.2, "dt_annual": TERMINAL_DI_ANNUAL, "q_ramp": 0.0},
+        "water": {"qi": 200.0, "di_annual": 0.60, "b": 1.0, "dt_annual": TERMINAL_DI_ANNUAL, "q_ramp": 0.0},
     }
 
 
@@ -241,6 +271,7 @@ def _derive_suggested_params(
             "di_annual": float(np.clip(np.median([f["di_annual"] for f in fits]), 0.01, 5.0)),
             "b":         float(np.clip(np.median([f["b"] for f in fits]), 0.01, B_FACTOR_CAP)),
             "dt_annual": TERMINAL_DI_ANNUAL,
+            "q_ramp":    0.0,
         }
 
     defaults = _default_suggested_params()
@@ -265,6 +296,7 @@ def generate_type_curve_profile(stream_params: dict, n_months: int = 600) -> np.
         dt_annual=stream_params["dt_annual"],
         ramp_months=int(stream_params.get("ramp_months", 0)),
         n_months=n_months,
+        q_ramp=float(stream_params.get("q_ramp", 0.0)),
     )
 
 

@@ -347,6 +347,83 @@ def stream_type_curve_chart(
     return fig
 
 
+def cumulative_type_curve_chart(
+    offset_traces: list[dict],
+    cum_p10: np.ndarray,
+    cum_p50: np.ndarray,
+    cum_p90: np.ndarray,
+    formation: str = "",
+    active_curve: np.ndarray | None = None,
+    active_label: str = "Active Type Curve",
+    days_per_month: float = 30.44,
+) -> go.Figure:
+    """
+    Cumulative oil chart for type curve calibration.
+    offset_traces: same format as type_curve_chart — daily rates (BOPD / 10k ft)
+    cum_p10/p50/p90: cumulative BBL per 10k ft from build_type_curve
+    active_curve: monthly volumes (BBL per 10k ft) from generate_type_curve_profile
+    """
+    fig = go.Figure()
+
+    # Per-well faint cumulative traces
+    for i, t in enumerate(offset_traces):
+        rates = np.array(t["rates"], dtype=float)
+        cum_mbo = np.cumsum(rates * days_per_month) / 1_000
+        fig.add_trace(go.Scatter(
+            x=t["months"], y=cum_mbo,
+            mode="lines", line=dict(color="lightsteelblue", width=1),
+            opacity=0.25,
+            name="Offset wells" if i == 0 else None,
+            showlegend=(i == 0), hoverinfo="skip",
+        ))
+
+    months = np.arange(len(cum_p50))
+    p10_mbo = np.nan_to_num(cum_p10, nan=0.0) / 1_000
+    p50_mbo = np.nan_to_num(cum_p50, nan=0.0) / 1_000
+    p90_mbo = np.nan_to_num(cum_p90, nan=0.0) / 1_000
+
+    fig.add_trace(go.Scatter(
+        x=np.concatenate([months, months[::-1]]),
+        y=np.concatenate([p10_mbo, p90_mbo[::-1]]),
+        fill="toself", fillcolor="rgba(31,119,180,0.10)",
+        line=dict(color="rgba(255,255,255,0)"),
+        name="P10–P90", hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=months, y=p10_mbo,
+        mode="lines", line=dict(color="rgba(31,119,180,0.5)", width=1.5, dash="dot"),
+        name="P10",
+    ))
+    fig.add_trace(go.Scatter(
+        x=months, y=p90_mbo,
+        mode="lines", line=dict(color="rgba(31,119,180,0.5)", width=1.5, dash="dot"),
+        name="P90",
+    ))
+    fig.add_trace(go.Scatter(
+        x=months, y=p50_mbo,
+        mode="lines", line=dict(color="steelblue", width=3),
+        name="P50",
+    ))
+
+    if active_curve is not None:
+        active_cum_mbo = np.cumsum(np.asarray(active_curve, dtype=float)) / 1_000
+        fig.add_trace(go.Scatter(
+            x=np.arange(len(active_cum_mbo)), y=active_cum_mbo,
+            mode="lines", line=dict(color="crimson", width=2.5),
+            name=active_label,
+        ))
+
+    fig.update_layout(
+        title=f"Cumulative Oil — {formation} (normalized to 10,000 ft)",
+        xaxis_title="Months on Production",
+        yaxis_title="Cumulative Oil (MBO / 10,000 ft lateral)",
+        height=380,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=80),
+    )
+    return fig
+
+
 def formation_well_count_chart(counts: dict[str, int]) -> go.Figure:
     """
     Horizontal bar chart showing qualifying offset well counts per formation.

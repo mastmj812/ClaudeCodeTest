@@ -170,7 +170,7 @@ def _init_state():
         "existing_well_npv": 0.0,
         # per-well decline param overrides {api → {qi, di_annual, b}}
         "well_params_override": {},
-        # per-formation type curve params {formation → {oil, gas, water: {qi, di_annual, b, dt_annual, ramp_months}}}
+        # per-formation type curve params {formation → {oil, gas, water: {qi, di_annual, b, dt_annual, ramp_months, q_ramp}}}
         "tc_params": {},
     }
     for k, v in defaults.items():
@@ -688,7 +688,7 @@ with tab3:
         st.info("Configure economics in the sidebar to proceed.")
     else:
         from ui.charts import (type_curve_chart, stream_type_curve_chart,
-                               formation_well_count_chart)
+                               formation_well_count_chart, cumulative_type_curve_chart)
         from engineering.type_curve import generate_type_curve_profile, export_type_curve_csv
         from datetime import date as _date
 
@@ -784,9 +784,9 @@ with tab3:
             if selected_formation not in st.session_state.tc_params:
                 sp = tc.get("suggested_params", {})
                 st.session_state.tc_params[selected_formation] = {
-                    "oil":   {**sp.get("oil",   {}), "ramp_months": 0},
-                    "gas":   {**sp.get("gas",   {}), "ramp_months": 0},
-                    "water": {**sp.get("water", {}), "ramp_months": 0},
+                    "oil":   {**sp.get("oil",   {}), "ramp_months": 0, "q_ramp": 0.0},
+                    "gas":   {**sp.get("gas",   {}), "ramp_months": 0, "q_ramp": 0.0},
+                    "water": {**sp.get("water", {}), "ramp_months": 0, "q_ramp": 0.0},
                 }
             params = st.session_state.tc_params[selected_formation]
 
@@ -805,6 +805,11 @@ with tab3:
                             "Ramp months", min_value=0, max_value=24,
                             value=int(p.get("ramp_months", 0)), step=1,
                             key=f"ramp_{selected_formation}_{stream_key}",
+                        ),
+                        "q_ramp": st.number_input(
+                            f"Ramp start rate ({qi_unit})", min_value=0.0,
+                            value=float(p.get("q_ramp", 0.0)), step=10.0, format="%.1f",
+                            key=f"q_ramp_{selected_formation}_{stream_key}",
                         ),
                         "qi": st.number_input(
                             f"qi ({qi_unit})", min_value=0.0,
@@ -885,6 +890,19 @@ with tab3:
                     mime="text/csv",
                     use_container_width=True,
                 )
+
+            # ── Cumulative oil chart ──────────────────────────────────────────
+            st.plotly_chart(
+                cumulative_type_curve_chart(
+                    offset_traces=tc["traces"],
+                    cum_p10=tc.get("cum_p10", np.full(120, np.nan)),
+                    cum_p50=tc.get("cum_p50", np.full(120, np.nan)),
+                    cum_p90=tc.get("cum_p90", np.full(120, np.nan)),
+                    formation=selected_formation,
+                    active_curve=active_oil,
+                ),
+                use_container_width=True,
+            )
 
             # ── Gas and water mini-charts ─────────────────────────────────────
             gas_chart_col, water_chart_col = st.columns(2)
@@ -996,9 +1014,9 @@ with tab4:
                     else:
                         sp = tc.get("suggested_params", {})
                         tc_p = {
-                            "oil":   {**sp.get("oil",   {}), "ramp_months": 0},
-                            "gas":   {**sp.get("gas",   {}), "ramp_months": 0},
-                            "water": {**sp.get("water", {}), "ramp_months": 0},
+                            "oil":   {**sp.get("oil",   {}), "ramp_months": 0, "q_ramp": 0.0},
+                            "gas":   {**sp.get("gas",   {}), "ramp_months": 0, "q_ramp": 0.0},
+                            "water": {**sp.get("water", {}), "ramp_months": 0, "q_ramp": 0.0},
                         }
 
                     oil_profile   = generate_type_curve_profile(tc_p["oil"],   600)
@@ -1110,9 +1128,9 @@ with tab4:
                             else:
                                 sp2 = tc2.get("suggested_params", {})
                                 tc_p2 = {
-                                    "oil":   {**sp2.get("oil",   {}), "ramp_months": 0},
-                                    "gas":   {**sp2.get("gas",   {}), "ramp_months": 0},
-                                    "water": {**sp2.get("water", {}), "ramp_months": 0},
+                                    "oil":   {**sp2.get("oil",   {}), "ramp_months": 0, "q_ramp": 0.0},
+                                    "gas":   {**sp2.get("gas",   {}), "ramp_months": 0, "q_ramp": 0.0},
+                                    "water": {**sp2.get("water", {}), "ramp_months": 0, "q_ramp": 0.0},
                                 }
                             oil2   = generate_type_curve_profile(tc_p2["oil"],   600)
                             gas2   = generate_type_curve_profile(tc_p2["gas"],   600)
