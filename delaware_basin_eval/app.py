@@ -75,6 +75,39 @@ def _cached_map_offsets(
 
 
 @st.cache_data(show_spinner=False)
+def _cached_formation_well_counts(
+    wells_json: str,
+    center_lat: float,
+    center_lon: float,
+    radius_miles: float,
+    max_well_age_yr: int,
+    section_apis_tuple: tuple,
+) -> dict:
+    """
+    Return {canonical_formation: qualifying_well_count} across all formations
+    in the offset radius. Uses the same filter criteria as get_offset_wells().
+    """
+    from engineering.type_curve import get_offset_wells
+    wells_df = pd.read_json(io.StringIO(wells_json), orient="split")
+    if "api" in wells_df.columns:
+        wells_df["api"] = wells_df["api"].astype(str).str.zfill(14)
+    for col in ["first_prod_date", "spud_date"]:
+        if col in wells_df.columns:
+            wells_df[col] = pd.to_datetime(wells_df[col], errors="coerce")
+
+    section_apis = set(section_apis_tuple)
+    counts = {}
+    for formation in wells_df["formation"].dropna().unique():
+        offsets = get_offset_wells(
+            wells_df, [formation], center_lat, center_lon,
+            radius_miles, max_well_age_yr, section_apis,
+        )
+        if len(offsets) > 0:
+            counts[formation] = len(offsets)
+    return counts
+
+
+@st.cache_data(show_spinner=False)
 def _cached_type_curve(
     wells_json: str, prod_json: str,
     formation: str,
@@ -135,6 +168,10 @@ def _init_state():
         "formation_mapping": {},
         # existing well total NPV ($) computed in Tab 2, consumed in Tab 4
         "existing_well_npv": 0.0,
+        # per-well decline param overrides {api → {qi, di_annual, b}}
+        "well_params_override": {},
+        # per-formation type curve params {formation → {oil, gas, water: {qi, di_annual, b, dt_annual, ramp_months}}}
+        "tc_params": {},
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -493,6 +530,8 @@ with tab2:
         from economics.cashflow import build_existing_well_cashflow
         from economics.metrics import well_economics
         from ui.charts import decline_curve_grid
+        from engineering.decline import generate_stream_profile
+        from config import TERMINAL_DI_ANNUAL, MAX_PROJECTION_MONTHS
 
         with st.spinner("Fitting decline curves…"):
             decline_results = _cached_fit_wells(
@@ -500,7 +539,9 @@ with tab2:
                 section_prod.to_json(orient="split", date_format="iso"),
             )
 
-        # Build per-well economics
+        overrides = st.session_state.well_params_override
+
+        # Build per-well economics — apply any user overrides on top of auto-fit
         econ_rows = []
         well_plot_data = []
         all_cashflows = []
@@ -508,6 +549,16 @@ with tab2:
         for res in decline_results:
             api = str(res["api"]).zfill(14)
             wprod = section_prod[section_prod["api"] == api]
+
+            # Apply override if present
+            ov = overrides.get(api)
+            if ov:
+                res = {**res,
+                       "qi": ov["qi"],
+                       "Di_monthly": ov["di_annual"] / 12.0,
+                       "b": ov["b"],
+                       "success": True}
+
             if res["success"] and not wprod.empty:
                 cf = build_existing_well_cashflow(res, wprod, cfg)
                 econ = well_economics(cf, cfg["discount_rate"])
@@ -515,6 +566,7 @@ with tab2:
             else:
                 econ = {"npv": None, "pv10": None, "irr": None, "payout": None}
 
+            status = ("✏️ Override" if ov else "✅") if res["success"] else f"⚠️ {res.get('warning','')}"
             econ_rows.append({
                 "Well Name":      res["well_name"],
                 "Formation":      res["formation"],
@@ -526,26 +578,40 @@ with tab2:
                 "PV10 ($MM)":     round(econ["pv10"] / 1e6, 2) if econ["pv10"] is not None else None,
                 "IRR (%)":        round(econ["irr"] * 100, 1) if econ["irr"] is not None else None,
                 "Payout (mo)":    econ["payout"],
-                "Status":         "✅" if res["success"] else f"⚠️ {res.get('warning','')}",
+                "Status":         status,
             })
 
             if res.get("actual_months") and len(res["actual_months"]) > 0:
+                # Regenerate proj_rates from (possibly overridden) params for chart
+                if res["success"]:
+                    proj_vols = generate_stream_profile(
+                        qi=res["qi"], di_annual=res["Di_monthly"] * 12,
+                        b=res["b"], dt_annual=TERMINAL_DI_ANNUAL,
+                        ramp_months=0, n_months=MAX_PROJECTION_MONTHS,
+                    )
+                    proj_rates = proj_vols / 30.44
+                    n_actual = len(res["actual_months"])
+                    proj_months_chart = [n_actual + i for i in range(len(proj_rates))]
+                    proj_rates_chart = proj_rates.tolist()
+                else:
+                    proj_months_chart = None
+                    proj_rates_chart = None
+
                 well_plot_data.append({
-                    "well_name":   res["well_name"],
+                    "well_name":     res["well_name"],
                     "actual_months": res["actual_months"],
                     "actual_rates":  res["actual_rates"],
                     "fit_months":    list(range(len(res["actual_months"]))) if res["success"] else None,
                     "fit_rates":     list(res["fit_rates"]) if res["success"] and res["fit_rates"] is not None else None,
-                    "proj_months":   list(res["proj_months"]) if res["success"] and res["proj_months"] is not None else None,
-                    "proj_rates":    list(res["proj_rates"]) if res["success"] and res["proj_rates"] is not None else None,
+                    "proj_months":   proj_months_chart,
+                    "proj_rates":    proj_rates_chart,
                 })
 
         # Aggregate metrics
         total_npv  = sum(r["NPV ($MM)"]  or 0 for r in econ_rows)
         total_pv10 = sum(r["PV10 ($MM)"] or 0 for r in econ_rows)
         total_eur  = sum(r["EUR (MBOE)"] or 0 for r in econ_rows)
-        successful = sum(1 for r in econ_rows if r["Status"] == "✅")
-        # Store for Tab 4 waterfall
+        successful = sum(1 for r in econ_rows if r["Status"] in ("✅", "✏️ Override"))
         st.session_state.existing_well_npv = total_npv * 1_000_000
 
         col_a, col_b, col_c, col_d = st.columns(4)
@@ -554,16 +620,57 @@ with tab2:
         col_c.metric("Total EUR",          f"{total_eur:,.0f} MBOE")
         col_d.metric("Wells Fit",          f"{successful}/{len(decline_results)}")
 
-        # Decline curve chart
         if well_plot_data:
             st.plotly_chart(decline_curve_grid(well_plot_data[:12]), use_container_width=True)
             if len(well_plot_data) > 12:
                 st.caption(f"Showing first 12 of {len(well_plot_data)} wells.")
 
-        # Economics table
         st.markdown("#### Well-Level Economics")
         econ_df = pd.DataFrame(econ_rows)
         st.dataframe(econ_df, use_container_width=True, hide_index=True)
+
+        # Editable decline parameters
+        with st.expander("✏️ Edit Decline Parameters", expanded=False):
+            st.caption(
+                "Override the auto-fitted decline parameters for any well. "
+                "Click a cell to edit. Changes take effect after clicking **Apply Overrides**."
+            )
+            param_rows = []
+            for res in decline_results:
+                api = str(res["api"]).zfill(14)
+                ov = overrides.get(api)
+                param_rows.append({
+                    "_api":          api,
+                    "Well Name":     res["well_name"],
+                    "qi (BOPD)":     round(ov["qi"] if ov else (res["qi"] if res["success"] else 0.0), 1),
+                    "Di annual (%)": round((ov["di_annual"] if ov else (res["Di_monthly"] * 12 if res["success"] else 0.10)) * 100, 2),
+                    "b":             round(ov["b"] if ov else (res["b"] if res["success"] else 1.2), 3),
+                })
+
+            edited_params = st.data_editor(
+                pd.DataFrame(param_rows),
+                column_config={
+                    "_api":          st.column_config.TextColumn("API", disabled=True),
+                    "Well Name":     st.column_config.TextColumn(disabled=True),
+                    "qi (BOPD)":     st.column_config.NumberColumn(min_value=0.0, step=10.0),
+                    "Di annual (%)": st.column_config.NumberColumn(min_value=0.1, max_value=500.0, step=1.0),
+                    "b":             st.column_config.NumberColumn(min_value=0.01, max_value=2.0, step=0.05),
+                },
+                hide_index=True,
+                use_container_width=True,
+                key="well_param_editor",
+            )
+
+            if st.button("Apply Overrides", type="primary"):
+                new_overrides = {}
+                for _, row in edited_params.iterrows():
+                    new_overrides[row["_api"]] = {
+                        "qi":        float(row["qi (BOPD)"]),
+                        "di_annual": float(row["Di annual (%)"]) / 100.0,
+                        "b":         float(row["b"]),
+                    }
+                st.session_state.well_params_override = new_overrides
+                st.rerun()
 
 with tab3:
     if section_wells is None:
@@ -571,160 +678,240 @@ with tab3:
     elif cfg is None:
         st.info("Configure economics in the sidebar to proceed.")
     else:
-        from ui.charts import type_curve_chart
+        from ui.charts import (type_curve_chart, stream_type_curve_chart,
+                               formation_well_count_chart)
+        from engineering.type_curve import generate_type_curve_profile, export_type_curve_csv
+        from datetime import date as _date
 
-        # All raw formation names available in the dataset
         all_data_formations = sorted(wells_df["formation"].dropna().unique().tolist())
-
-        # Formation selector — all canonical formations, not just what's in section
         extra = [f for f in all_data_formations if f not in FORMATIONS]
         formation_options = FORMATIONS + extra
 
-        top_left, top_right = st.columns([2, 3])
-        with top_left:
-            selected_formation = st.selectbox("Formation for type curve", options=formation_options)
+        valid_sw = section_wells.dropna(subset=["latitude", "longitude"])
+        center_lat = valid_sw["latitude"].mean() if not valid_sw.empty else 31.5
+        center_lon = valid_sw["longitude"].mean() if not valid_sw.empty else -104.0
+        _section_apis_t = tuple(sorted(section_wells["api"].tolist()))
+        _wells_json = wells_df.to_json(orient="split", date_format="iso")
+        _prod_json  = prod_df.to_json(orient="split", date_format="iso")
 
-        with top_right:
-            # Per-formation offset name selection, persisted in session state
+        # ── Formation selector + comp set ────────────────────────────────────
+        sel_col, comp_col = st.columns([2, 3])
+        with sel_col:
+            selected_formation = st.selectbox("Formation for type curve", options=formation_options)
+        with comp_col:
             saved_names = st.session_state.formation_name_map.get(selected_formation)
             if saved_names is None:
-                # Default: the formation itself if it exists in the data
                 saved_names = [selected_formation] if selected_formation in all_data_formations else []
             valid_defaults = [n for n in saved_names if n in all_data_formations]
             offset_names = st.multiselect(
                 "Offset well formation names for comp set",
                 options=all_data_formations,
                 default=valid_defaults,
-                help=(
-                    "Pick every raw ENVInterval value that represents this zone "
-                    "(e.g. 'Wolfcamp B', 'WC-B', 'WF-B'). "
-                    "This selection is saved per formation and used in Undrilled Economics."
-                ),
+                help="Pick every raw ENVInterval value that represents this zone.",
             )
             st.session_state.formation_name_map[selected_formation] = offset_names
 
-        valid_sw = section_wells.dropna(subset=["latitude", "longitude"])
-        center_lat = valid_sw["latitude"].mean() if not valid_sw.empty else 31.5
-        center_lon = valid_sw["longitude"].mean() if not valid_sw.empty else -104.0
-
-        # Effective comp set: use configured names; fall back to the selected formation itself
         effective_fnames = offset_names if offset_names else (
             [selected_formation] if selected_formation in all_data_formations else []
         )
 
+        # ── Top row: map (left) + formation well-count chart (right) ─────────
+        map_col, count_col = st.columns([3, 2])
+
+        with map_col:
+            _map_fnames = effective_fnames if effective_fnames else [selected_formation]
+            map_offsets = _cached_map_offsets(
+                _wells_json, tuple(sorted(_map_fnames)),
+                center_lat, center_lon, cfg["offset_radius_mi"], _section_apis_t,
+            )
+            st.plotly_chart(
+                section_map(
+                    section_wells,
+                    offset_wells=map_offsets if not map_offsets.empty else None,
+                    radius_miles=cfg["offset_radius_mi"],
+                    center_lat=center_lat, center_lon=center_lon,
+                ),
+                use_container_width=True,
+            )
+
+        with count_col:
+            with st.spinner("Counting offset wells by formation…"):
+                well_counts = _cached_formation_well_counts(
+                    _wells_json, center_lat, center_lon,
+                    cfg["offset_radius_mi"], cfg["max_well_age_yr"], _section_apis_t,
+                )
+            st.plotly_chart(
+                formation_well_count_chart(well_counts),
+                use_container_width=True,
+            )
+
+        # ── Load type curve ──────────────────────────────────────────────────
         tc, offsets = None, None
         if effective_fnames:
-            with st.spinner(f"Finding {selected_formation} offset wells…"):
+            with st.spinner(f"Building {selected_formation} type curve…"):
                 tc, offsets = _cached_type_curve(
-                    wells_df.to_json(orient="split", date_format="iso"),
-                    prod_df.to_json(orient="split", date_format="iso"),
-                    selected_formation,
-                    center_lat, center_lon,
+                    _wells_json, _prod_json,
+                    selected_formation, center_lat, center_lon,
                     cfg["offset_radius_mi"], cfg["max_well_age_yr"],
-                    tuple(sorted(section_wells["api"].tolist())),
-                    tuple(sorted(effective_fnames)),
+                    _section_apis_t, tuple(sorted(effective_fnames)),
                 )
 
-        if not offset_names and not effective_fnames:
+        if not effective_fnames:
             st.info("Select at least one formation name in the comp set to build a type curve.")
+        elif tc is not None and tc["n_wells"] == 0:
+            st.warning(
+                f"No qualifying offset wells found for {selected_formation} within "
+                f"{cfg['offset_radius_mi']} miles. Try increasing the radius or max well age."
+            )
+            fc = offsets.attrs.get("filter_counts", {}) if offsets is not None else {}
+            if fc:
+                st.caption(
+                    f"Filter: total {fc.get('total','?')} → formation {fc.get('after_formation','?')} "
+                    f"→ age {fc.get('after_age','?')} → excl. section {fc.get('after_section_exclude','?')} "
+                    f"→ lateral {fc.get('after_lateral','?')} → radius {fc.get('after_radius','?')}"
+                )
+        elif tc is not None:
+            # ── Initialize tc_params from suggested_params on first load ──────
+            if selected_formation not in st.session_state.tc_params:
+                sp = tc.get("suggested_params", {})
+                st.session_state.tc_params[selected_formation] = {
+                    "oil":   {**sp.get("oil",   {}), "ramp_months": 0},
+                    "gas":   {**sp.get("gas",   {}), "ramp_months": 0},
+                    "water": {**sp.get("water", {}), "ramp_months": 0},
+                }
+            params = st.session_state.tc_params[selected_formation]
 
-        # Map uses a relaxed filter (formation + radius only, no age/lateral cutoffs)
-        # so all known offset wells are visible regardless of type-curve eligibility
-        _map_fnames = effective_fnames if effective_fnames else [selected_formation]
-        _wells_json = wells_df.to_json(orient="split", date_format="iso")
-        _section_apis_t = tuple(sorted(section_wells["api"].tolist()))
-        map_offsets = _cached_map_offsets(
-            _wells_json,
-            tuple(sorted(_map_fnames)),
-            center_lat, center_lon,
-            cfg["offset_radius_mi"],
-            _section_apis_t,
-        )
-        st.plotly_chart(
-            section_map(
-                section_wells,
-                offset_wells=map_offsets if not map_offsets.empty else None,
-                radius_miles=cfg["offset_radius_mi"],
-                center_lat=center_lat,
-                center_lon=center_lon,
-            ),
-            use_container_width=True,
-        )
+            # ── Type curve parameter inputs (3 columns) ───────────────────────
+            st.markdown("#### Type Curve Parameters")
+            p_col_oil, p_col_gas, p_col_water = st.columns(3)
+            changed = False
 
-        col_left, col_right = st.columns([3, 2])
-
-        with col_left:
-            if tc is not None:
-                if tc["n_wells"] == 0:
-                    st.warning(
-                        f"No qualifying offset wells found for {selected_formation} within "
-                        f"{cfg['offset_radius_mi']} miles. Try increasing the radius or max well age."
-                    )
-                    fc = offsets.attrs.get("filter_counts", {}) if offsets is not None else {}
-                    if fc:
-                        st.caption(
-                            f"Filter breakdown — "
-                            f"Total wells: {fc.get('total', '?')} → "
-                            f"After formation: {fc.get('after_formation', '?')} → "
-                            f"After age ({cfg['max_well_age_yr']}yr): {fc.get('after_age', '?')} → "
-                            f"After section exclude: {fc.get('after_section_exclude', '?')} → "
-                            f"After lateral ≥ {MIN_LATERAL_FT:,} ft: {fc.get('after_lateral', '?')} → "
-                            f"After radius: {fc.get('after_radius', '?')}"
-                        )
-                else:
-                    st.plotly_chart(
-                        type_curve_chart(
-                            tc["traces"], tc["p10"], tc["p50"], tc["p90"],
-                            formation=selected_formation,
-                            n_wells=tc["n_wells"],
+            def _stream_inputs(col, stream_key: str, label: str, qi_unit: str):
+                """Render number inputs for one stream; return updated params dict."""
+                p = st.session_state.tc_params[selected_formation][stream_key]
+                with col:
+                    st.markdown(f"**{label}**")
+                    new_p = {
+                        "ramp_months": st.number_input(
+                            "Ramp months", min_value=0, max_value=24,
+                            value=int(p.get("ramp_months", 0)), step=1,
+                            key=f"ramp_{selected_formation}_{stream_key}",
                         ),
-                        use_container_width=True,
-                    )
-                    if not offset_names:
-                        st.caption("Using default comp set (same formation name). Configure a custom comp set above.")
-                    if tc["excluded"] > 0:
-                        st.caption(
-                            f"{tc['excluded']} wells excluded (missing lateral length or production)."
-                        )
+                        "qi": st.number_input(
+                            f"qi ({qi_unit})", min_value=0.0,
+                            value=float(p.get("qi", 100.0)), step=10.0, format="%.1f",
+                            key=f"qi_{selected_formation}_{stream_key}",
+                        ),
+                        "di_annual": st.number_input(
+                            "Di annual (%)", min_value=1.0, max_value=500.0,
+                            value=float(p.get("di_annual", 0.80) * 100), step=5.0, format="%.1f",
+                            key=f"di_{selected_formation}_{stream_key}",
+                        ) / 100.0,
+                        "b": st.number_input(
+                            "b factor", min_value=0.01, max_value=2.0,
+                            value=float(p.get("b", 1.2)), step=0.05, format="%.2f",
+                            key=f"b_{selected_formation}_{stream_key}",
+                        ),
+                        "dt_annual": st.number_input(
+                            "Dt annual (%)", min_value=0.1, max_value=30.0,
+                            value=float(p.get("dt_annual", 0.06) * 100), step=0.5, format="%.1f",
+                            key=f"dt_{selected_formation}_{stream_key}",
+                        ) / 100.0,
+                    }
+                return new_p
 
-        with col_right:
-            st.markdown("#### Offset Well Stats")
-            if tc is not None and tc["n_wells"] > 0:
+            new_oil   = _stream_inputs(p_col_oil,   "oil",   "Oil",   "BOPD/10kft")
+            new_gas   = _stream_inputs(p_col_gas,   "gas",   "Gas",   "MCF/d/10kft")
+            new_water = _stream_inputs(p_col_water, "water", "Water", "BWPD/10kft")
+
+            # Detect changes and persist
+            if (new_oil != params["oil"] or new_gas != params["gas"] or new_water != params["water"]):
+                st.session_state.tc_params[selected_formation] = {
+                    "oil": new_oil, "gas": new_gas, "water": new_water,
+                }
+                params = st.session_state.tc_params[selected_formation]
+
+            # ── Generate active profiles ──────────────────────────────────────
+            N_MONTHS = 600
+            active_oil   = generate_type_curve_profile(params["oil"],   N_MONTHS)
+            active_gas   = generate_type_curve_profile(params["gas"],   N_MONTHS)
+            active_water = generate_type_curve_profile(params["water"], N_MONTHS)
+
+            # ── Oil type curve chart + stats ──────────────────────────────────
+            chart_col, stats_col = st.columns([3, 1])
+            with chart_col:
+                st.plotly_chart(
+                    type_curve_chart(
+                        tc["traces"], tc["p10"], tc["p50"], tc["p90"],
+                        formation=selected_formation, n_wells=tc["n_wells"],
+                        active_curve=active_oil,
+                    ),
+                    use_container_width=True,
+                )
+                if not offset_names:
+                    st.caption("Using default comp set (same formation name).")
+                if tc["excluded"] > 0:
+                    st.caption(f"{tc['excluded']} wells excluded (missing lateral or production data).")
+
+            with stats_col:
+                st.markdown("#### Comp Set Stats")
                 st.metric("Wells in comp set", tc["n_wells"])
-                st.metric("Median lateral length", f"{tc['median_lateral']:,.0f} ft")
-
-                # EUR/ft of P50 curve
-                p50_valid = tc["p50"]
-                eur_per_ft = float(np.nansum(p50_valid * 30.44)) / 10_000
-                st.metric(
-                    "EUR/ft — P50",
-                    f"{eur_per_ft:.1f} BO/ft",
-                    help="Cumulative oil production per lateral foot from the P50 type curve (oil only)",
-                )
-                st.metric(
-                    "Median GOR",
-                    f"{tc.get('median_gor', 1.5):.2f} MCF/BBL",
-                    help="Median cumulative gas-oil ratio across offset wells — used for gas revenue in undrilled well economics",
-                )
-
+                st.metric("Median lateral", f"{tc['median_lateral']:,.0f} ft")
+                eur_per_ft = float(np.nansum(active_oil)) / 10_000
+                st.metric("EUR/ft (active)", f"{eur_per_ft:.1f} BO/ft")
                 if offsets is not None and not offsets.empty and "first_prod_date" in offsets.columns:
                     dates = offsets["first_prod_date"].dropna()
                     if not dates.empty:
-                        st.metric(
-                            "Comp date range",
-                            f"{dates.min().strftime('%m/%Y')} – {dates.max().strftime('%m/%Y')}",
-                        )
+                        st.metric("Comp date range",
+                                  f"{dates.min().strftime('%m/%Y')} – {dates.max().strftime('%m/%Y')}")
 
-            st.markdown("#### Remaining Locations")
-            from engineering.spacing import remaining_locations
-            rem_df = remaining_locations(
-                section_wells,
-                st.session_state.section_acreage,
-                cfg["wells_per_section"],
-            )
+                st.markdown("---")
+                csv_str = export_type_curve_csv(
+                    selected_formation, active_oil, active_gas, active_water
+                )
+                st.download_button(
+                    label="Export CSV",
+                    data=csv_str,
+                    file_name=f"type_curve_{selected_formation.replace(' ','_')}_{_date.today()}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+
+            # ── Gas and water mini-charts ─────────────────────────────────────
+            gas_chart_col, water_chart_col = st.columns(2)
+            with gas_chart_col:
+                st.plotly_chart(
+                    stream_type_curve_chart(
+                        p50=tc.get("gas_p50", np.full(120, np.nan)),
+                        active_curve=active_gas,
+                        title=f"Gas — {selected_formation}",
+                        y_title="Gas Rate (MCF/d / 10,000 ft lateral)",
+                    ),
+                    use_container_width=True,
+                )
+            with water_chart_col:
+                st.plotly_chart(
+                    stream_type_curve_chart(
+                        p50=tc.get("water_p50", np.full(120, np.nan)),
+                        active_curve=active_water,
+                        title=f"Water — {selected_formation}",
+                        y_title="Water Rate (BWPD / 10,000 ft lateral)",
+                    ),
+                    use_container_width=True,
+                )
+
+        # ── Remaining locations ───────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### Remaining Locations")
+        from engineering.spacing import remaining_locations
+        rem_df = remaining_locations(
+            section_wells, st.session_state.section_acreage, cfg["wells_per_section"],
+        )
+        rem_col, rem_metric_col = st.columns([3, 1])
+        with rem_col:
             st.dataframe(rem_df, use_container_width=True, hide_index=True)
-            total_remaining = rem_df["Remaining"].sum()
-            st.metric("Total Undrilled Locations", int(total_remaining))
+        with rem_metric_col:
+            st.metric("Total Undrilled Locations", int(rem_df["Remaining"].sum()))
 
 with tab4:
     if section_wells is None:
@@ -756,6 +943,7 @@ with tab4:
                 econ_rows = []
                 formation_npvs = {}
                 all_undrilled_cf = []
+                from engineering.type_curve import generate_type_curve_profile
 
                 for _, row in rem_df.iterrows():
                     formation   = row["Formation"]
@@ -782,9 +970,8 @@ with tab4:
                         tuple(sorted(section_apis)),
                         tuple(sorted(fnames)),
                     )
-                    p50 = tc["p50"]
 
-                    if tc["n_wells"] == 0 or np.all(np.isnan(p50)):
+                    if tc["n_wells"] == 0:
                         econ_rows.append({
                             "Formation": formation, "Remaining Wells": n_remaining,
                             "NPV/Well ($MM)": None, "IRR/Well (%)": None,
@@ -794,9 +981,24 @@ with tab4:
                         })
                         continue
 
-                    # Use GOR derived from actual offset well gas production
-                    cfg_well = {**cfg, "type_curve_gor": tc.get("median_gor", 1.5)}
-                    cf_one = build_undrilled_well_cashflow(p50, cfg_well, formation)
+                    # Use user-adjusted tc_params if available, else suggested_params from tc
+                    if formation in st.session_state.tc_params:
+                        tc_p = st.session_state.tc_params[formation]
+                    else:
+                        sp = tc.get("suggested_params", {})
+                        tc_p = {
+                            "oil":   {**sp.get("oil",   {}), "ramp_months": 0},
+                            "gas":   {**sp.get("gas",   {}), "ramp_months": 0},
+                            "water": {**sp.get("water", {}), "ramp_months": 0},
+                        }
+
+                    oil_profile   = generate_type_curve_profile(tc_p["oil"],   600)
+                    gas_profile   = generate_type_curve_profile(tc_p["gas"],   600)
+                    water_profile = generate_type_curve_profile(tc_p["water"], 600)
+
+                    cf_one = build_undrilled_well_cashflow(
+                        oil_profile, gas_profile, water_profile, cfg, formation
+                    )
                     econ   = well_economics(cf_one, cfg["discount_rate"])
 
                     npv_val  = econ["npv"]  if (econ["npv"]  is not None and np.isfinite(econ["npv"]))  else None
@@ -871,7 +1073,10 @@ with tab4:
                         low_cfg  = {**cfg, key: base_val * 0.80}
                         high_cfg = {**cfg, key: base_val * 1.20}
 
-                    def _quick_npv(alt_cfg, _rem=rem_df, _clat=center_lat, _clon=center_lon, _fm=_fname_map):
+                    _tc_params_snap = dict(st.session_state.tc_params)
+
+                    def _quick_npv(alt_cfg, _rem=rem_df, _clat=center_lat, _clon=center_lon,
+                                   _fm=_fname_map, _tcp=_tc_params_snap):
                         total = 0.0
                         wj = wells_df.to_json(orient="split", date_format="iso")
                         pj = prod_df.to_json(orient="split", date_format="iso")
@@ -891,8 +1096,19 @@ with tab4:
                             )
                             if tc2["n_wells"] == 0:
                                 continue
-                            cfg_w2 = {**alt_cfg, "type_curve_gor": tc2.get("median_gor", 1.5)}
-                            cf2 = build_undrilled_well_cashflow(tc2["p50"], cfg_w2, fm2)
+                            if fm2 in _tcp:
+                                tc_p2 = _tcp[fm2]
+                            else:
+                                sp2 = tc2.get("suggested_params", {})
+                                tc_p2 = {
+                                    "oil":   {**sp2.get("oil",   {}), "ramp_months": 0},
+                                    "gas":   {**sp2.get("gas",   {}), "ramp_months": 0},
+                                    "water": {**sp2.get("water", {}), "ramp_months": 0},
+                                }
+                            oil2   = generate_type_curve_profile(tc_p2["oil"],   600)
+                            gas2   = generate_type_curve_profile(tc_p2["gas"],   600)
+                            water2 = generate_type_curve_profile(tc_p2["water"], 600)
+                            cf2 = build_undrilled_well_cashflow(oil2, gas2, water2, alt_cfg, fm2)
                             e2  = well_economics(cf2, alt_cfg["discount_rate"])
                             v2  = e2["npv"]
                             if v2 is not None and np.isfinite(v2):

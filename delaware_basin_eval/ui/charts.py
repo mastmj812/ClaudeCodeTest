@@ -226,16 +226,21 @@ def decline_curve_grid(wells_data: list[dict]) -> go.Figure:
 # ── Tab 3: Type curve ──────────────────────────────────────────────────────
 
 def type_curve_chart(
-    offset_traces: list[dict],   # list of {months, rates, well_name}
+    offset_traces: list[dict],
     p10: np.ndarray,
     p50: np.ndarray,
     p90: np.ndarray,
     formation: str = "",
     n_wells: int = 0,
+    active_curve: np.ndarray | None = None,
+    active_label: str = "Active Type Curve",
+    y_title: str = "Oil Rate (BOPD / 10,000 ft lateral)",
+    days_per_month: float = 30.44,
 ) -> go.Figure:
     """
-    Individual normalized offset well traces (faint) + P10/P50/P90 band.
-    X axis = months on production, Y = BOPD / 10,000 ft lateral.
+    Normalized offset well traces + P10/P50/P90 band.
+    Optional active_curve overlay (user-adjusted type curve) shown in red.
+    active_curve is monthly volumes — converted to daily rates for display.
     """
     fig = go.Figure()
     months = np.arange(len(p50))
@@ -263,33 +268,120 @@ def type_curve_chart(
         hoverinfo="skip",
     ))
 
-    # P10
     fig.add_trace(go.Scatter(
         x=months, y=p10,
         mode="lines", line=dict(color="rgba(31,119,180,0.5)", width=1.5, dash="dot"),
         name="P10",
     ))
-    # P90
     fig.add_trace(go.Scatter(
         x=months, y=p90,
         mode="lines", line=dict(color="rgba(31,119,180,0.5)", width=1.5, dash="dot"),
         name="P90",
     ))
-    # P50
     fig.add_trace(go.Scatter(
         x=months, y=p50,
         mode="lines", line=dict(color="steelblue", width=3),
-        name="P50 (type curve)",
+        name="P50",
     ))
+
+    # Active type curve overlay
+    if active_curve is not None:
+        active_rates = np.asarray(active_curve, dtype=float) / days_per_month
+        active_months = np.arange(len(active_rates))
+        fig.add_trace(go.Scatter(
+            x=active_months, y=active_rates,
+            mode="lines", line=dict(color="crimson", width=2.5),
+            name=active_label,
+        ))
 
     fig.update_layout(
         title=f"Type Curve — {formation} ({n_wells} offset wells, normalized to 10,000 ft)",
         xaxis_title="Months on Production",
-        yaxis_title="Oil Rate (BOPD / 10,000 ft lateral)",
+        yaxis_title=y_title,
         yaxis_type="log",
         height=420,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(t=80),
+    )
+    return fig
+
+
+def stream_type_curve_chart(
+    p50: np.ndarray,
+    active_curve: np.ndarray | None,
+    title: str,
+    y_title: str,
+    days_per_month: float = 30.44,
+) -> go.Figure:
+    """
+    Compact chart for gas or water stream: P50 statistical trace + active curve overlay.
+    """
+    fig = go.Figure()
+    months = np.arange(len(p50))
+    p50_rates = np.nan_to_num(p50, nan=0.0) / days_per_month
+
+    fig.add_trace(go.Scatter(
+        x=months, y=p50_rates,
+        mode="lines", line=dict(color="steelblue", width=2.5, dash="dash"),
+        name="P50",
+    ))
+
+    if active_curve is not None:
+        active_rates = np.asarray(active_curve, dtype=float) / days_per_month
+        active_months = np.arange(len(active_rates))
+        fig.add_trace(go.Scatter(
+            x=active_months, y=active_rates,
+            mode="lines", line=dict(color="crimson", width=2.5),
+            name="Active",
+        ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Months on Production",
+        yaxis_title=y_title,
+        yaxis_type="log",
+        height=280,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=60, b=40),
+    )
+    return fig
+
+
+def formation_well_count_chart(counts: dict[str, int]) -> go.Figure:
+    """
+    Horizontal bar chart showing qualifying offset well counts per formation.
+    counts: {formation_name: well_count}
+    """
+    if not counts:
+        fig = go.Figure()
+        fig.update_layout(title="No qualifying offset wells found", height=300)
+        return fig
+
+    # Sort by count descending, filter to non-zero
+    sorted_items = sorted(
+        [(f, c) for f, c in counts.items() if c > 0],
+        key=lambda x: x[1],
+    )
+    formations = [item[0] for item in sorted_items]
+    well_counts = [item[1] for item in sorted_items]
+    colors = [_formation_color(f) for f in formations]
+
+    fig = go.Figure(go.Bar(
+        x=well_counts,
+        y=formations,
+        orientation="h",
+        marker_color=colors,
+        text=well_counts,
+        textposition="outside",
+        hovertemplate="%{y}: %{x} wells<extra></extra>",
+    ))
+
+    fig.update_layout(
+        title="Qualifying Offset Wells by Formation",
+        xaxis_title="Well Count",
+        height=max(250, len(formations) * 35 + 80),
+        margin=dict(l=10, r=40, t=50, b=40),
+        yaxis=dict(tickfont=dict(size=11)),
     )
     return fig
 

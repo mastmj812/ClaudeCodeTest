@@ -209,6 +209,62 @@ def project_monthly_volumes(
     return np.array(volumes[:n_months])
 
 
+def generate_stream_profile(
+    qi: float,
+    di_annual: float,
+    b: float,
+    dt_annual: float,
+    ramp_months: int,
+    n_months: int,
+    days_per_month: float = 30.44,
+) -> np.ndarray:
+    """
+    Generate monthly volumes for one stream (oil BBL, gas MCF, or water BBL).
+
+    Parameters
+    ----------
+    qi          : peak daily rate (BOPD, MCF/d, or BWPD) at start of decline
+    di_annual   : initial nominal annual decline rate (decimal, e.g. 0.80)
+    b           : Arps b-factor
+    dt_annual   : terminal annual decline rate (decimal) — switches from hyperbolic
+                  to exponential when instantaneous Di reaches this level
+    ramp_months : months of flat production at qi before decline begins
+    n_months    : total profile length to return
+    days_per_month : days per month for rate→volume conversion
+
+    Returns
+    -------
+    np.ndarray of shape (n_months,) — monthly volumes
+    """
+    Di_monthly = di_annual / 12.0
+    terminal_Di_monthly = dt_annual / 12.0
+
+    t_switch = float("inf")
+    if b > 0 and Di_monthly > terminal_Di_monthly:
+        t_switch = (Di_monthly / terminal_Di_monthly - 1.0) / (b * Di_monthly)
+
+    volumes = []
+    decline_t = 0.0  # time within the decline segment (starts after ramp)
+
+    for month in range(n_months):
+        if month < ramp_months:
+            rate = qi
+        else:
+            decline_t += 1.0
+            if decline_t <= t_switch:
+                rate = _hyperbolic(decline_t, qi, Di_monthly, b)
+            else:
+                q_switch = _hyperbolic(t_switch, qi, Di_monthly, b)
+                rate = _exponential(decline_t - t_switch, q_switch, terminal_Di_monthly)
+            rate = max(rate, 0.0)
+            if rate < ECONOMIC_LIMIT_BOPD:
+                rate = 0.0
+
+        volumes.append(rate * days_per_month)
+
+    return np.array(volumes)
+
+
 def fit_all_section_wells(
     section_wells: pd.DataFrame,
     section_prod: pd.DataFrame,
