@@ -218,18 +218,30 @@ def build_type_curve(
         gas_p50   = np.nanpercentile(gas_matrix,   50, axis=0)
         water_p50 = np.nanpercentile(water_matrix, 50, axis=0)
 
-        # Cumulative per-well arrays (BBL per 10k ft) — percentile of cumulative
-        # is statistically correct (not cumsum of percentile-of-rates)
+        # Cumulative per-well arrays (BBL per 10k ft). nancumsum treats NaN
+        # as 0 — so wells with shorter histories get an artificially flat tail.
+        # Restore NaN at originally-missing positions so nanpercentile
+        # correctly drops those wells from per-month statistics.
+        oil_nan_mask   = np.isnan(oil_matrix)
+        gas_nan_mask   = np.isnan(gas_matrix)
+        water_nan_mask = np.isnan(water_matrix)
         cum_oil   = np.nancumsum(oil_matrix   * _dpm, axis=1)
         cum_gas   = np.nancumsum(gas_matrix   * _dpm, axis=1)
         cum_water = np.nancumsum(water_matrix * _dpm, axis=1)
+        cum_oil[oil_nan_mask]     = np.nan
+        cum_gas[gas_nan_mask]     = np.nan
+        cum_water[water_nan_mask] = np.nan
         cum_p10       = np.nanpercentile(cum_oil,   10, axis=0)
         cum_p50       = np.nanpercentile(cum_oil,   50, axis=0)
         cum_p90       = np.nanpercentile(cum_oil,   90, axis=0)
         cum_gas_p50   = np.nanpercentile(cum_gas,   50, axis=0)
         cum_water_p50 = np.nanpercentile(cum_water, 50, axis=0)
 
+    # Smooth all three percentile bands consistently. Smoothing only P50
+    # would leave a ragged P10/P90 envelope that can crisscross the median.
+    p10 = _rolling_median(p10, window=3)
     p50 = _rolling_median(p50, window=3)
+    p90 = _rolling_median(p90, window=3)
 
     suggested = _derive_suggested_params(oil_fits, gas_fits, water_fits)
 
