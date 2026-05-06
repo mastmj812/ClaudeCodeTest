@@ -58,6 +58,36 @@ def _radius_circle(
     return lats, lons
 
 
+def _lateral_line_coords(grp: pd.DataFrame) -> tuple[list, list]:
+    """
+    Build lat/lon arrays that draw one line segment per well, with None
+    separators so segments don't connect across wells.
+
+    Each well's segment runs from heel→bottom-hole when both heel coords
+    (`latitude_heel`/`longitude_heel`) are present (more accurate — the
+    stick spans only the horizontal lateral). Otherwise falls back to
+    surface→BH. Wells without BH coords contribute nothing.
+    """
+    if "latitude_bh" not in grp.columns or "longitude_bh" not in grp.columns:
+        return [], []
+    has_heel = (
+        "latitude_heel"  in grp.columns
+        and "longitude_heel" in grp.columns
+    )
+    lats: list = []
+    lons: list = []
+    for _, w in grp.iterrows():
+        if not (pd.notna(w.get("latitude_bh")) and pd.notna(w.get("longitude_bh"))):
+            continue
+        if has_heel and pd.notna(w.get("latitude_heel")) and pd.notna(w.get("longitude_heel")):
+            start_lat, start_lon = w["latitude_heel"], w["longitude_heel"]
+        else:
+            start_lat, start_lon = w["latitude"], w["longitude"]
+        lats.extend([start_lat, w["latitude_bh"], None])
+        lons.extend([start_lon, w["longitude_bh"], None])
+    return lats, lons
+
+
 def section_map(
     section_wells: pd.DataFrame,
     offset_wells: pd.DataFrame | None = None,
@@ -69,7 +99,8 @@ def section_map(
     """
     Scatter mapbox showing in-section wells colored by formation,
     offset wells colored by formation (smaller/lower opacity), and
-    optional shapefile boundary.
+    optional shapefile boundary. When bottom-hole coords are present,
+    each well is also drawn as a line from surface to BH.
     """
     fig = go.Figure()
 
@@ -79,12 +110,29 @@ def section_map(
         off = offset_wells.dropna(subset=["latitude", "longitude"])
         for formation in off["formation"].fillna("Unknown").unique():
             grp = off[off["formation"].fillna("Unknown") == formation]
+            color = _formation_color(formation)
+            legend_group = f"offset_{formation}"
+
+            line_lats, line_lons = _lateral_line_coords(grp)
+            if line_lats:
+                fig.add_trace(go.Scattermapbox(
+                    lat=line_lats, lon=line_lons,
+                    mode="lines",
+                    line=dict(color=color, width=1.5),
+                    opacity=0.5,
+                    name=f"Offset · {formation}",
+                    legendgroup=legend_group,
+                    showlegend=False,
+                    hoverinfo="skip",
+                ))
+
             fig.add_trace(go.Scattermapbox(
                 lat=grp["latitude"],
                 lon=grp["longitude"],
                 mode="markers",
-                marker=dict(size=6, color=_formation_color(formation), opacity=0.7),
+                marker=dict(size=6, color=color, opacity=0.7),
                 name=f"Offset · {formation}",
+                legendgroup=legend_group,
                 hovertemplate=(
                     "<b>%{customdata[0]}</b><br>"
                     "Formation: " + formation + "<br>"
@@ -98,12 +146,28 @@ def section_map(
         sw = section_wells.dropna(subset=["latitude", "longitude"])
         for formation in sw["formation"].fillna("Unknown").unique():
             grp = sw[sw["formation"].fillna("Unknown") == formation]
+            color = _formation_color(formation)
+            legend_group = f"section_{formation}"
+
+            line_lats, line_lons = _lateral_line_coords(grp)
+            if line_lats:
+                fig.add_trace(go.Scattermapbox(
+                    lat=line_lats, lon=line_lons,
+                    mode="lines",
+                    line=dict(color=color, width=3),
+                    name=formation,
+                    legendgroup=legend_group,
+                    showlegend=False,
+                    hoverinfo="skip",
+                ))
+
             fig.add_trace(go.Scattermapbox(
                 lat=grp["latitude"],
                 lon=grp["longitude"],
                 mode="markers",
-                marker=dict(size=9, color=_formation_color(formation)),
+                marker=dict(size=9, color=color),
                 name=formation,
+                legendgroup=legend_group,
                 hovertemplate=(
                     "<b>%{customdata[0]}</b><br>"
                     "Formation: " + formation + "<br>"

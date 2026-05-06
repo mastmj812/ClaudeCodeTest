@@ -22,6 +22,10 @@ WELL_CANONICAL = {
     "county":         ["county", "county name"],
     "latitude":       ["latitude", "surface latitude", "surf_lat", "lat"],
     "longitude":      ["longitude", "surface longitude", "surf_long", "lon", "long"],
+    "latitude_bh":    ["latitude_bh", "bh latitude", "bottom hole latitude",
+                       "bottomhole latitude", "lat_bh", "bh_lat", "bottom_hole_lat"],
+    "longitude_bh":   ["longitude_bh", "bh longitude", "bottom hole longitude",
+                       "bottomhole longitude", "long_bh", "lon_bh", "bh_lon", "bottom_hole_lon"],
     "formation":      ["formation", "producing formation", "reservoir", "zone", "envinterval", "env interval"],
     "lateral_length": ["lateral length", "lateral_length", "perf interval", "completed lateral length",
                        "lateral length (ft)", "lateral_length_ft", "laterallength_ft", "laterallength (ft)"],
@@ -113,7 +117,8 @@ def load_well_header(file) -> pd.DataFrame:
             df[col] = pd.to_datetime(df[col], errors="coerce")
 
     # Coerce numerics
-    for col in ["lateral_length", "measured_depth", "tvd", "latitude", "longitude"]:
+    for col in ["lateral_length", "measured_depth", "tvd",
+                "latitude", "longitude", "latitude_bh", "longitude_bh"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 

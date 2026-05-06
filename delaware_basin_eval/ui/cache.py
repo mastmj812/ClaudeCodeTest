@@ -34,21 +34,21 @@ def map_offsets(
     section_apis_tuple: tuple,
 ) -> pd.DataFrame:
     """
-    Return all formation-matching wells within radius for map display.
+    Return all formation-matching wells inside the offset area-of-interest
+    (drawn polygon if present, else circular radius) for map display.
     No age or lateral-length filtering — shows maximum context on the map.
     """
-    from utils.geo import haversine_miles
+    from utils.geo import filter_offsets
     wells_df = st.session_state.wells_df
 
     df = wells_df[wells_df["formation"].fillna("").isin(list(formation_names_tuple))].copy()
     df = df[~df["api"].isin(set(section_apis_tuple))]
 
-    valid = df.dropna(subset=["latitude", "longitude"])
-    if valid.empty:
-        return valid.reset_index(drop=True)
+    if df.empty:
+        return df.reset_index(drop=True)
 
-    dists = haversine_miles(center_lat, center_lon, valid["latitude"].values, valid["longitude"].values)
-    return valid[dists <= radius_miles].reset_index(drop=True)
+    aoi_gdf = st.session_state.get("offset_aoi_gdf")
+    return filter_offsets(df, center_lat, center_lon, radius_miles, aoi_gdf=aoi_gdf).reset_index(drop=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -62,17 +62,19 @@ def formation_well_counts(
 ) -> dict:
     """
     Return {canonical_formation: qualifying_well_count} across all formations
-    in the offset radius. Uses the same filter criteria as get_offset_wells().
+    in the offset AOI (drawn polygon if present, else radius circle). Uses
+    the same filter criteria as get_offset_wells().
     """
     from engineering.type_curve import get_offset_wells
     wells_df = st.session_state.wells_df
+    aoi_gdf = st.session_state.get("offset_aoi_gdf")
 
     section_apis = set(section_apis_tuple)
     counts = {}
     for formation in wells_df["formation"].dropna().unique():
         offsets = get_offset_wells(
             wells_df, [formation], center_lat, center_lon,
-            radius_miles, max_well_age_yr, section_apis,
+            radius_miles, max_well_age_yr, section_apis, aoi_gdf=aoi_gdf,
         )
         if len(offsets) > 0:
             counts[formation] = len(offsets)
@@ -92,8 +94,9 @@ def type_curve(
     from engineering.type_curve import get_offset_wells, build_type_curve
     wells_df = st.session_state.wells_df
     prod_df  = st.session_state.prod_df
+    aoi_gdf = st.session_state.get("offset_aoi_gdf")
     offsets = get_offset_wells(
         wells_df, list(formation_names_tuple), center_lat, center_lon,
-        radius_miles, max_well_age_yr, set(section_apis_tuple),
+        radius_miles, max_well_age_yr, set(section_apis_tuple), aoi_gdf=aoi_gdf,
     )
     return build_type_curve(offsets, prod_df), offsets

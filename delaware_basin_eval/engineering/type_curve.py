@@ -26,16 +26,19 @@ def get_offset_wells(
     radius_miles: float,
     max_well_age_yr: int,
     section_apis: set | None = None,
+    aoi_gdf=None,
 ) -> pd.DataFrame:
     """
     Filter wells_df to offset type-curve candidates:
       - Formation is in formation_names (user-selected raw names)
       - First production date within the last max_well_age_yr years
-      - Within radius_miles of center_lat/center_lon
+      - Inside the offset AOI (drawn polygon if aoi_gdf given,
+        else within radius_miles of center_lat/center_lon)
       - Not in section_apis (exclude in-section wells from comps)
       - Has a valid lateral_length >= MIN_LATERAL_FT
     """
     from config import MIN_LATERAL_FT
+    from utils.geo import wells_in_polygon
 
     df = wells_df.copy()
     counts = {"total": len(df)}
@@ -61,9 +64,13 @@ def get_offset_wells(
         valid.attrs["filter_counts"] = counts
         return valid
 
-    dists = haversine_miles(center_lat, center_lon, valid["latitude"].values, valid["longitude"].values)
-    valid = valid[dists <= radius_miles].copy()
-    counts["after_radius"] = len(valid)
+    if aoi_gdf is not None:
+        valid = wells_in_polygon(valid, aoi_gdf)
+        counts["after_aoi"] = len(valid)
+    else:
+        dists = haversine_miles(center_lat, center_lon, valid["latitude"].values, valid["longitude"].values)
+        valid = valid[dists <= radius_miles].copy()
+        counts["after_radius"] = len(valid)
 
     valid.attrs["filter_counts"] = counts
     return valid.reset_index(drop=True)
@@ -290,8 +297,8 @@ def build_type_curve(
 
 def _default_suggested_params() -> dict:
     return {
-        "oil":   {"qi": 500.0, "di_annual": 0.80, "b": 1.2, "dt_annual": TERMINAL_DI_ANNUAL, "q_ramp": 0.0},
-        "gas":   {"qi": 750.0, "di_annual": 0.80, "b": 1.2, "dt_annual": TERMINAL_DI_ANNUAL, "q_ramp": 0.0},
+        "oil":   {"qi": 500.0, "di_annual": 0.80, "b": 1.0, "dt_annual": TERMINAL_DI_ANNUAL, "q_ramp": 0.0},
+        "gas":   {"qi": 750.0, "di_annual": 0.80, "b": 1.0, "dt_annual": TERMINAL_DI_ANNUAL, "q_ramp": 0.0},
         "water": {"qi": 200.0, "di_annual": 0.60, "b": 1.0, "dt_annual": TERMINAL_DI_ANNUAL, "q_ramp": 0.0},
     }
 
@@ -305,7 +312,7 @@ def _derive_suggested_params(
         return {
             "qi":        float(np.median([f["qi"] for f in fits])),
             "di_annual": float(np.clip(np.median([f["di_annual"] for f in fits]), 0.01, 5.0)),
-            "b":         float(np.clip(np.median([f["b"] for f in fits]), 0.01, B_FACTOR_CAP)),
+            "b":         1.0,
             "dt_annual": TERMINAL_DI_ANNUAL,
             "q_ramp":    0.0,
         }

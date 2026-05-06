@@ -55,6 +55,47 @@ def read_shapefile_zip(file) -> "gpd.GeoDataFrame":
     return gdf
 
 
+def geojson_to_gdf(geojson: dict) -> "gpd.GeoDataFrame":
+    """
+    Convert a GeoJSON dict (typically from a Leaflet/folium Draw control) to a
+    WGS84 GeoDataFrame. Accepts either a FeatureCollection or a single Feature.
+    """
+    if not HAS_GEO:
+        raise ImportError("geopandas is required for AOI polygon support.")
+    if not geojson:
+        raise ValueError("Empty GeoJSON.")
+
+    if geojson.get("type") == "FeatureCollection":
+        features = geojson.get("features", [])
+    elif geojson.get("type") == "Feature":
+        features = [geojson]
+    else:
+        # Bare geometry — wrap as feature
+        features = [{"type": "Feature", "properties": {}, "geometry": geojson}]
+
+    if not features:
+        raise ValueError("GeoJSON contains no features.")
+
+    return gpd.GeoDataFrame.from_features(features, crs=WGS84_EPSG)
+
+
+def filter_offsets(
+    wells_df: pd.DataFrame,
+    center_lat: float,
+    center_lon: float,
+    radius_miles: float,
+    aoi_gdf: "gpd.GeoDataFrame | None" = None,
+) -> pd.DataFrame:
+    """
+    Filter wells to those inside the offset area of interest.
+    If aoi_gdf is provided, uses spatial containment; otherwise falls back
+    to a circular radius around (center_lat, center_lon).
+    """
+    if aoi_gdf is not None and HAS_GEO:
+        return wells_in_polygon(wells_df, aoi_gdf)
+    return wells_within_radius(wells_df, center_lat, center_lon, radius_miles)
+
+
 def wells_in_polygon(wells_df: pd.DataFrame, polygon_gdf: "gpd.GeoDataFrame") -> pd.DataFrame:
     """
     Return rows of wells_df whose lat/lon fall within any geometry in polygon_gdf.
