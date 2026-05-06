@@ -14,17 +14,24 @@ def build_existing_well_cashflow(
     prod_df_for_well: pd.DataFrame,
     cfg: dict,
     days_per_month: float = 30.44,
-) -> np.ndarray:
+) -> tuple[np.ndarray, list[str]]:
     """
     Build a monthly net cash flow array for an existing well.
 
     Uses actual production for past months, then the fitted decline
     projection for future months.
 
-    Returns a 1-D array of net monthly cash flows ($).
+    Returns
+    -------
+    cashflow : 1-D array of net monthly cash flows ($)
+    warnings : list[str] — non-fatal modeling fallbacks invoked during
+               construction (e.g., default GOR/WOR when historical oil = 0).
+               Caller can surface these in the UI.
     """
     if not decline_result.get("success"):
-        return np.array([])
+        return np.array([]), []
+
+    warnings: list[str] = []
 
     # ── Historical production (actual) ────────────────────────────────────
     hist = prod_df_for_well.sort_values("prod_date").copy()
@@ -51,18 +58,23 @@ def build_existing_well_cashflow(
     n_proj = MAX_PROJECTION_MONTHS
 
     oil_proj = project_monthly_volumes(qi, Di, b, n_proj, days_per_month)
+
+    oil_sum = hist["oil_bbl"].sum()
+
     # Estimate gas from historical GOR
-    if hist["oil_bbl"].sum() > 0:
-        gor = hist["gas_mcf"].sum() / hist["oil_bbl"].sum()
+    if oil_sum > 0:
+        gor = hist["gas_mcf"].sum() / oil_sum
     else:
         gor = 1.5  # MCF/BBL default
+        warnings.append("default_gor")
     gas_proj = oil_proj * gor
+
     # Estimate water from historical WOR
-    oil_sum = hist["oil_bbl"].sum()
     if "water_bbl" in hist.columns and oil_sum > 0:
         wor = hist["water_bbl"].fillna(0).sum() / oil_sum
     else:
         wor = cfg.get("wor", 1.5)
+        warnings.append("default_wor")
     water_proj = oil_proj * wor
 
     rev_proj  = calc_monthly_revenue(oil_proj, gas_proj, cfg)
@@ -79,7 +91,7 @@ def build_existing_well_cashflow(
     if len(last_nonzero):
         net_proj = net_proj[: last_nonzero[-1] + 1]
 
-    return np.concatenate([net_hist, net_proj])
+    return np.concatenate([net_hist, net_proj]), warnings
 
 
 def build_undrilled_well_cashflow(

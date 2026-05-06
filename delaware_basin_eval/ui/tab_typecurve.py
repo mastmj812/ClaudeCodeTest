@@ -133,6 +133,16 @@ def _render_phase_section(
 
     st.markdown(f"### {label}")
 
+    # Empty-state hint when offset comp set has no data for this stream
+    p50_key = "p50" if stream_key == "oil" else f"{stream_key}_p50"
+    p50_arr = tc.get(p50_key)
+    if p50_arr is not None and np.all(np.isnan(p50_arr)):
+        st.caption(
+            f"⚠️ No {label.lower()} data in the comp set — the offset wells "
+            f"have no recorded {label.lower()} production. Statistical band "
+            f"will be empty; the active curve still drives undrilled economics."
+        )
+
     # 1. Parameter inputs (horizontal)
     new_p = _stream_param_inputs(selected_formation, stream_key)
     params = st.session_state.tc_params[selected_formation]

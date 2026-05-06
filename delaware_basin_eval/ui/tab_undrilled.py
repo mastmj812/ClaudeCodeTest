@@ -43,7 +43,35 @@ def render():
         st.info("Configure economics in the sidebar to proceed.")
         return
 
+    # B1 — lateral length validation
+    from config import MIN_LATERAL_FT
+    lat_assumed = cfg.get("lateral_length", 0)
+    if lat_assumed < MIN_LATERAL_FT:
+        st.error(
+            f"Configured lateral length ({lat_assumed:,} ft) is below the minimum "
+            f"({MIN_LATERAL_FT:,} ft). Update **Lateral length** in the sidebar before "
+            f"running undrilled economics."
+        )
+        return
+    if "lateral_length" in section_wells.columns:
+        sec_lat = section_wells["lateral_length"]
+        n_invalid = int(sec_lat.isna().sum() + (sec_lat.fillna(0) <= 0).sum() - sec_lat.isna().sum())
+        n_missing = int(sec_lat.isna().sum())
+        n_total_invalid = n_missing + n_invalid
+        if n_total_invalid > 0:
+            st.warning(
+                f"{n_total_invalid} of {len(section_wells)} section wells have missing "
+                f"or zero lateral_length. Undrilled economics use the configured "
+                f"lateral length ({lat_assumed:,} ft) — verify it matches your dev plan."
+            )
+
     valid_sw = section_wells.dropna(subset=["latitude", "longitude"])
+    if valid_sw.empty:
+        st.warning(
+            "Section wells have no coordinates — using basin centroid as a "
+            "placeholder for offset distance calculations. Comp sets may be "
+            "less representative."
+        )
     center_lat = valid_sw["latitude"].mean() if not valid_sw.empty else 31.5
     center_lon = valid_sw["longitude"].mean() if not valid_sw.empty else -104.0
     section_apis = set(section_wells["api"])
@@ -138,6 +166,33 @@ def render():
         st.markdown("#### Undrilled Location Economics by Formation")
         if econ_rows:
             st.dataframe(pd.DataFrame(econ_rows), use_container_width=True, hide_index=True)
+
+            # B4 — explain blank metric cells
+            scored = [r for r in econ_rows if r.get("NPV/Well ($MM)") is not None]
+            n_scored = len(scored)
+            n_no_irr = sum(1 for r in scored if r.get("IRR/Well (%)")    is None)
+            n_no_pay = sum(1 for r in scored if r.get("Payout/Well (mo)") is None)
+            n_no_comp = sum(1 for r in econ_rows if r.get("Note") and "comp set" in r["Note"].lower())
+            n_no_offs = sum(1 for r in econ_rows if r.get("Note") and "offset wells" in r["Note"].lower())
+            failure_msgs = []
+            if n_no_irr:
+                failure_msgs.append(
+                    f"{n_no_irr}/{n_scored} formation(s) — IRR undefined (cashflow never turns positive)"
+                )
+            if n_no_pay:
+                failure_msgs.append(
+                    f"{n_no_pay}/{n_scored} formation(s) — payout never reached"
+                )
+            if n_no_comp:
+                failure_msgs.append(
+                    f"{n_no_comp} formation(s) skipped — comp set not configured (visit Type Curve tab)"
+                )
+            if n_no_offs:
+                failure_msgs.append(
+                    f"{n_no_offs} formation(s) skipped — no qualifying offset wells (try larger radius)"
+                )
+            if failure_msgs:
+                st.caption("ℹ️ " + " · ".join(failure_msgs))
 
         if formation_npvs:
             existing_npv = st.session_state.get("existing_well_npv", 0.0) or 0.0

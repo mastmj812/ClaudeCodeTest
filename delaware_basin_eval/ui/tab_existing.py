@@ -35,6 +35,8 @@ def render():
     econ_rows = []
     well_plot_data = []
     all_cashflows = []
+    n_default_gor = 0
+    n_default_wor = 0
 
     for res in decline_results:
         api = str(res["api"]).zfill(14)
@@ -49,9 +51,13 @@ def render():
                    "success": True}
 
         if res["success"] and not wprod.empty:
-            cf = build_existing_well_cashflow(res, wprod, cfg)
+            cf, cf_warnings = build_existing_well_cashflow(res, wprod, cfg)
             econ = well_economics(cf, cfg["discount_rate"])
             all_cashflows.append(cf)
+            if "default_gor" in cf_warnings:
+                n_default_gor += 1
+            if "default_wor" in cf_warnings:
+                n_default_wor += 1
         else:
             econ = {"npv": None, "pv10": None, "irr": None, "payout": None}
 
@@ -127,6 +133,35 @@ def render():
 
     st.markdown("#### Well-Level Economics")
     st.dataframe(pd.DataFrame(econ_rows), use_container_width=True, hide_index=True)
+
+    fallback_msgs = []
+    if n_default_gor:
+        fallback_msgs.append(
+            f"{n_default_gor} well(s) used default GOR (1.5 MCF/BBL) — no historical oil to derive from"
+        )
+    if n_default_wor:
+        fallback_msgs.append(
+            f"{n_default_wor} well(s) used default WOR ({cfg.get('wor', 1.5)} BBL/BBL) — no historical oil/water to derive from"
+        )
+    if fallback_msgs:
+        st.caption("⚠️ Modeling fallbacks: " + " · ".join(fallback_msgs))
+
+    # B4 — surface econ-metric computation failures
+    fit_rows = [r for r in econ_rows if r["Status"] in ("✅", "✏️ Override")]
+    n_fit = len(fit_rows)
+    n_no_irr    = sum(1 for r in fit_rows if r["IRR (%)"]     is None)
+    n_no_payout = sum(1 for r in fit_rows if r["Payout (mo)"] is None)
+    failure_msgs = []
+    if n_no_irr:
+        failure_msgs.append(
+            f"{n_no_irr}/{n_fit} well(s) — IRR undefined (cashflow never turns positive or has multiple sign changes)"
+        )
+    if n_no_payout:
+        failure_msgs.append(
+            f"{n_no_payout}/{n_fit} well(s) — payout never reached (cumulative cashflow stays negative)"
+        )
+    if failure_msgs:
+        st.caption("ℹ️ Metrics shown as blank: " + " · ".join(failure_msgs))
 
     with st.expander("✏️ Edit Decline Parameters", expanded=False):
         st.caption(

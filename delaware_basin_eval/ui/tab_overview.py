@@ -21,25 +21,30 @@ def render():
     col_c.metric("Section Acreage", f"{st.session_state.section_acreage:,.0f} ac")
 
     offset_wells = None
-    if cfg and wells_df is not None:
-        valid_sw = section_wells.dropna(subset=["latitude", "longitude"])
-        if not valid_sw.empty:
-            center_lat = valid_sw["latitude"].mean()
-            center_lon = valid_sw["longitude"].mean()
-            try:
-                from utils.geo import wells_within_radius
-                offset_wells = wells_within_radius(
-                    wells_df, center_lat, center_lon, cfg["offset_radius_mi"]
-                )
-                section_apis = set(section_wells["api"])
-                offset_wells = offset_wells[~offset_wells["api"].isin(section_apis)]
-            except Exception:
-                offset_wells = None
+    valid_sw = section_wells.dropna(subset=["latitude", "longitude"])
+    if valid_sw.empty:
+        st.warning(
+            "Section wells have no coordinates — map and offset distance "
+            "calculations are unavailable."
+        )
+    elif cfg and wells_df is not None:
+        center_lat = valid_sw["latitude"].mean()
+        center_lon = valid_sw["longitude"].mean()
+        try:
+            from utils.geo import wells_within_radius
+            offset_wells = wells_within_radius(
+                wells_df, center_lat, center_lon, cfg["offset_radius_mi"]
+            )
+            section_apis = set(section_wells["api"])
+            offset_wells = offset_wells[~offset_wells["api"].isin(section_apis)]
+        except Exception:
+            offset_wells = None
 
-    st.plotly_chart(
-        section_map(section_wells, offset_wells=offset_wells),
-        use_container_width=True,
-    )
+    if not valid_sw.empty:
+        st.plotly_chart(
+            section_map(section_wells, offset_wells=offset_wells),
+            use_container_width=True,
+        )
 
     st.markdown("#### Well Inventory")
     display_cols = [c for c in
