@@ -2,6 +2,8 @@
 Arps hyperbolic decline curve fitting and EUR projection.
 """
 
+import math
+
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
@@ -9,6 +11,39 @@ from config import (
     B_FACTOR_CAP, TERMINAL_DI_ANNUAL, ECONOMIC_LIMIT_BOPD,
     MAX_PROJECTION_MONTHS, MIN_MONTHS_FOR_FIT,
 )
+
+
+# ── Decline-rate unit conversions ─────────────────────────────────────────
+# Internal math (Arps _hyperbolic / _exponential) uses *nominal* monthly Di.
+# Engineers expect to see *effective* annual decline (always 0–99%). Convert
+# at display boundaries only, never inside the math.
+
+def nominal_monthly_to_effective_annual(di_monthly: float, b: float) -> float:
+    """Hyperbolic at t=0; reduces to exponential when b → 0."""
+    if di_monthly <= 0:
+        return 0.0
+    if b <= 1e-6:
+        return 1.0 - math.exp(-12.0 * di_monthly)
+    return 1.0 - (1.0 + 12.0 * b * di_monthly) ** (-1.0 / b)
+
+
+def effective_annual_to_nominal_monthly(de_annual: float, b: float) -> float:
+    """Inverse of nominal_monthly_to_effective_annual."""
+    de = max(0.0, min(de_annual, 0.999))  # bound to keep math defined
+    if de <= 0:
+        return 0.0
+    if b <= 1e-6:
+        return -math.log(1.0 - de) / 12.0
+    return ((1.0 - de) ** (-b) - 1.0) / (12.0 * b)
+
+
+def nominal_annual_to_effective_annual(di_annual: float, b: float) -> float:
+    """Convenience: tc_params stores Di as `di_annual` (nominal annual) = Di_monthly * 12."""
+    return nominal_monthly_to_effective_annual(di_annual / 12.0, b)
+
+
+def effective_annual_to_nominal_annual(de_annual: float, b: float) -> float:
+    return effective_annual_to_nominal_monthly(de_annual, b) * 12.0
 
 
 def _hyperbolic(t: np.ndarray, qi: float, Di: float, b: float) -> np.ndarray:

@@ -87,9 +87,11 @@ def build_type_curve(
     empty = np.full(max_months, np.nan)
     empty_result = {
         "p10": empty.copy(), "p50": empty.copy(), "p90": empty.copy(),
-        "gas_p50": empty.copy(), "water_p50": empty.copy(),
+        "gas_p10": empty.copy(), "gas_p50": empty.copy(), "gas_p90": empty.copy(),
+        "water_p10": empty.copy(), "water_p50": empty.copy(), "water_p90": empty.copy(),
         "cum_p10": empty.copy(), "cum_p50": empty.copy(), "cum_p90": empty.copy(),
-        "cum_gas_p50": empty.copy(), "cum_water_p50": empty.copy(),
+        "cum_gas_p10": empty.copy(), "cum_gas_p50": empty.copy(), "cum_gas_p90": empty.copy(),
+        "cum_water_p10": empty.copy(), "cum_water_p50": empty.copy(), "cum_water_p90": empty.copy(),
         "traces": [], "n_wells": 0, "excluded": 0, "median_lateral": 0.0,
         "suggested_params": _default_suggested_params(),
     }
@@ -215,12 +217,16 @@ def build_type_curve(
         p10 = np.nanpercentile(oil_matrix,   10, axis=0)
         p50 = np.nanpercentile(oil_matrix,   50, axis=0)
         p90 = np.nanpercentile(oil_matrix,   90, axis=0)
+        gas_p10   = np.nanpercentile(gas_matrix,   10, axis=0)
         gas_p50   = np.nanpercentile(gas_matrix,   50, axis=0)
+        gas_p90   = np.nanpercentile(gas_matrix,   90, axis=0)
+        water_p10 = np.nanpercentile(water_matrix, 10, axis=0)
         water_p50 = np.nanpercentile(water_matrix, 50, axis=0)
+        water_p90 = np.nanpercentile(water_matrix, 90, axis=0)
 
-        # Cumulative per-well arrays (BBL per 10k ft). nancumsum treats NaN
-        # as 0 — so wells with shorter histories get an artificially flat tail.
-        # Restore NaN at originally-missing positions so nanpercentile
+        # Cumulative per-well arrays (BBL or MCF per 10k ft). nancumsum treats
+        # NaN as 0 — so wells with shorter histories get an artificially flat
+        # tail. Restore NaN at originally-missing positions so nanpercentile
         # correctly drops those wells from per-month statistics.
         oil_nan_mask   = np.isnan(oil_matrix)
         gas_nan_mask   = np.isnan(gas_matrix)
@@ -234,14 +240,24 @@ def build_type_curve(
         cum_p10       = np.nanpercentile(cum_oil,   10, axis=0)
         cum_p50       = np.nanpercentile(cum_oil,   50, axis=0)
         cum_p90       = np.nanpercentile(cum_oil,   90, axis=0)
+        cum_gas_p10   = np.nanpercentile(cum_gas,   10, axis=0)
         cum_gas_p50   = np.nanpercentile(cum_gas,   50, axis=0)
+        cum_gas_p90   = np.nanpercentile(cum_gas,   90, axis=0)
+        cum_water_p10 = np.nanpercentile(cum_water, 10, axis=0)
         cum_water_p50 = np.nanpercentile(cum_water, 50, axis=0)
+        cum_water_p90 = np.nanpercentile(cum_water, 90, axis=0)
 
-    # Smooth all three percentile bands consistently. Smoothing only P50
-    # would leave a ragged P10/P90 envelope that can crisscross the median.
-    p10 = _rolling_median(p10, window=3)
-    p50 = _rolling_median(p50, window=3)
-    p90 = _rolling_median(p90, window=3)
+    # Smooth all percentile bands consistently. Smoothing only P50 would
+    # leave a ragged P10/P90 envelope that can crisscross the median.
+    p10       = _rolling_median(p10,       window=3)
+    p50       = _rolling_median(p50,       window=3)
+    p90       = _rolling_median(p90,       window=3)
+    gas_p10   = _rolling_median(gas_p10,   window=3)
+    gas_p50   = _rolling_median(gas_p50,   window=3)
+    gas_p90   = _rolling_median(gas_p90,   window=3)
+    water_p10 = _rolling_median(water_p10, window=3)
+    water_p50 = _rolling_median(water_p50, window=3)
+    water_p90 = _rolling_median(water_p90, window=3)
 
     suggested = _derive_suggested_params(oil_fits, gas_fits, water_fits)
 
@@ -249,13 +265,21 @@ def build_type_curve(
         "p10":             p10,
         "p50":             p50,
         "p90":             p90,
+        "gas_p10":         gas_p10,
         "gas_p50":         gas_p50,
+        "gas_p90":         gas_p90,
+        "water_p10":       water_p10,
         "water_p50":       water_p50,
+        "water_p90":       water_p90,
         "cum_p10":         cum_p10,
         "cum_p50":         cum_p50,
         "cum_p90":         cum_p90,
+        "cum_gas_p10":     cum_gas_p10,
         "cum_gas_p50":     cum_gas_p50,
+        "cum_gas_p90":     cum_gas_p90,
+        "cum_water_p10":   cum_water_p10,
         "cum_water_p50":   cum_water_p50,
+        "cum_water_p90":   cum_water_p90,
         "traces":          traces,
         "n_wells":         int(oil_matrix.shape[0]),
         "excluded":        excluded,

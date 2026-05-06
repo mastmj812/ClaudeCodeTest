@@ -7,7 +7,11 @@ from ui import cache
 from ui.charts import decline_curve_grid
 from economics.cashflow import build_existing_well_cashflow
 from economics.metrics import well_economics
-from engineering.decline import generate_stream_profile
+from engineering.decline import (
+    generate_stream_profile,
+    nominal_annual_to_effective_annual,
+    effective_annual_to_nominal_annual,
+)
 from config import TERMINAL_DI_ANNUAL, MAX_PROJECTION_MONTHS
 
 
@@ -52,11 +56,15 @@ def render():
             econ = {"npv": None, "pv10": None, "irr": None, "payout": None}
 
         status = ("✏️ Override" if ov else "✅") if res["success"] else f"⚠️ {res.get('warning','')}"
+        if res["success"]:
+            di_eff_pct = nominal_annual_to_effective_annual(res["Di_monthly"], res["b"]) * 100.0
+        else:
+            di_eff_pct = None
         econ_rows.append({
             "Well Name":      res["well_name"],
             "Formation":      res["formation"],
             "qi (BOPD)":      round(res["qi"], 0) if res["success"] else None,
-            "Di (mo)":        round(res["Di_monthly"], 4) if res["success"] else None,
+            "Di eff (%)":     round(di_eff_pct, 1) if di_eff_pct is not None else None,
             "b":              round(res["b"], 2) if res["success"] else None,
             "EUR (MBOE)":     round(res["eur"] / 1000, 1) if res["success"] else None,
             "NPV ($MM)":      round(econ["npv"] / 1e6, 2) if econ["npv"] is not None else None,
@@ -123,28 +131,37 @@ def render():
     with st.expander("✏️ Edit Decline Parameters", expanded=False):
         st.caption(
             "Override the auto-fitted decline parameters for any well. "
-            "Click a cell to edit. Changes take effect after clicking **Apply Overrides**."
+            "Di is the effective annual decline rate (always 0–99%). "
+            "Click a cell to edit, then click **Apply Overrides**."
         )
         param_rows = []
         for res in decline_results:
             api = str(res["api"]).zfill(14)
             ov = overrides.get(api)
+            b_used = ov["b"] if ov else (res["b"] if res["success"] else 1.2)
+            if ov:
+                # ov["di_annual"] is stored as nominal annual
+                di_eff = nominal_annual_to_effective_annual(ov["di_annual"] / 12.0, b_used) * 100.0
+            elif res["success"]:
+                di_eff = nominal_annual_to_effective_annual(res["Di_monthly"], b_used) * 100.0
+            else:
+                di_eff = 70.0  # sensible default for empty/failed fits
             param_rows.append({
-                "_api":          api,
-                "Well Name":     res["well_name"],
-                "qi (BOPD)":     round(ov["qi"] if ov else (res["qi"] if res["success"] else 0.0), 1),
-                "Di annual (%)": round((ov["di_annual"] if ov else (res["Di_monthly"] * 12 if res["success"] else 0.10)) * 100, 2),
-                "b":             round(ov["b"] if ov else (res["b"] if res["success"] else 1.2), 3),
+                "_api":           api,
+                "Well Name":      res["well_name"],
+                "qi (BOPD)":      round(ov["qi"] if ov else (res["qi"] if res["success"] else 0.0), 1),
+                "Di eff ann (%)": round(di_eff, 1),
+                "b":              round(b_used, 3),
             })
 
         edited_params = st.data_editor(
             pd.DataFrame(param_rows),
             column_config={
-                "_api":          st.column_config.TextColumn("API", disabled=True),
-                "Well Name":     st.column_config.TextColumn(disabled=True),
-                "qi (BOPD)":     st.column_config.NumberColumn(min_value=0.0, step=10.0),
-                "Di annual (%)": st.column_config.NumberColumn(min_value=0.1, max_value=500.0, step=1.0),
-                "b":             st.column_config.NumberColumn(min_value=0.01, max_value=2.0, step=0.05),
+                "_api":           st.column_config.TextColumn("API", disabled=True),
+                "Well Name":      st.column_config.TextColumn(disabled=True),
+                "qi (BOPD)":      st.column_config.NumberColumn(min_value=0.0, step=10.0),
+                "Di eff ann (%)": st.column_config.NumberColumn(min_value=0.1, max_value=99.9, step=1.0),
+                "b":              st.column_config.NumberColumn(min_value=0.01, max_value=2.0, step=0.05),
             },
             hide_index=True,
             use_container_width=True,
@@ -154,10 +171,14 @@ def render():
         if st.button("Apply Overrides", type="primary"):
             new_overrides = {}
             for _, row in edited_params.iterrows():
+                b_user = float(row["b"])
+                di_eff = float(row["Di eff ann (%)"]) / 100.0
+                # Convert effective → nominal annual for storage
+                di_nom_annual = effective_annual_to_nominal_annual(di_eff, b_user)
                 new_overrides[row["_api"]] = {
                     "qi":        float(row["qi (BOPD)"]),
-                    "di_annual": float(row["Di annual (%)"]) / 100.0,
-                    "b":         float(row["b"]),
+                    "di_annual": di_nom_annual,
+                    "b":         b_user,
                 }
             st.session_state.well_params_override = new_overrides
             st.rerun()

@@ -7,52 +7,181 @@ import streamlit as st
 
 from ui import cache
 from ui.charts import (
-    section_map, type_curve_chart, stream_type_curve_chart,
-    formation_well_count_chart, cumulative_type_curve_chart,
+    section_map, type_curve_chart, formation_well_count_chart,
+    cumulative_type_curve_chart,
 )
 from engineering.type_curve import generate_type_curve_profile, export_type_curve_csv
+from engineering.decline import (
+    nominal_annual_to_effective_annual,
+    effective_annual_to_nominal_annual,
+)
 from engineering.spacing import remaining_locations
 from config import FORMATIONS
 
 
-def _stream_inputs(col, selected_formation: str, stream_key: str, label: str, qi_unit: str) -> dict:
-    """Render number inputs for one stream; return updated params dict."""
+# Per-stream display config
+_STREAM_CONFIG = {
+    "oil": {
+        "label":           "Oil",
+        "qi_unit":         "BOPD/10kft",
+        "rate_y_title":    "Oil Rate (BOPD / 10,000 ft lateral)",
+        "cum_unit_short": "MBO",
+        "cum_unit_scale": 1_000.0,
+    },
+    "gas": {
+        "label":           "Gas",
+        "qi_unit":         "MCF/d/10kft",
+        "rate_y_title":    "Gas Rate (MCF/d / 10,000 ft lateral)",
+        "cum_unit_short": "MMCF",
+        "cum_unit_scale": 1_000.0,
+    },
+    "water": {
+        "label":           "Water",
+        "qi_unit":         "BWPD/10kft",
+        "rate_y_title":    "Water Rate (BWPD / 10,000 ft lateral)",
+        "cum_unit_short": "MBW",
+        "cum_unit_scale": 1_000.0,
+    },
+}
+
+
+def _stream_param_inputs(selected_formation: str, stream_key: str) -> dict:
+    """Render the 6 parameter inputs for one stream as a horizontal row.
+    Returns the updated params dict (with `di_annual`/`dt_annual` stored
+    as nominal annual rates so internal math is unchanged; UI shows
+    effective annual decline)."""
     p = st.session_state.tc_params[selected_formation][stream_key]
-    with col:
-        st.markdown(f"**{label}**")
-        new_p = {
-            "ramp_months": st.number_input(
-                "Ramp months", min_value=0, max_value=24,
-                value=int(p.get("ramp_months", 0)), step=1,
-                key=f"ramp_{selected_formation}_{stream_key}",
-            ),
-            "q_ramp": st.number_input(
-                f"Ramp start rate ({qi_unit})", min_value=0.0,
-                value=float(p.get("q_ramp", 0.0)), step=10.0, format="%.1f",
-                key=f"q_ramp_{selected_formation}_{stream_key}",
-            ),
-            "qi": st.number_input(
-                f"qi ({qi_unit})", min_value=0.0,
-                value=float(p.get("qi", 100.0)), step=10.0, format="%.1f",
-                key=f"qi_{selected_formation}_{stream_key}",
-            ),
-            "di_annual": st.number_input(
-                "Di annual (%)", min_value=1.0, max_value=500.0,
-                value=float(p.get("di_annual", 0.80) * 100), step=5.0, format="%.1f",
-                key=f"di_{selected_formation}_{stream_key}",
-            ) / 100.0,
-            "b": st.number_input(
-                "b factor", min_value=0.01, max_value=2.0,
-                value=float(p.get("b", 1.2)), step=0.05, format="%.2f",
-                key=f"b_{selected_formation}_{stream_key}",
-            ),
-            "dt_annual": st.number_input(
-                "Dt annual (%)", min_value=0.1, max_value=30.0,
-                value=float(p.get("dt_annual", 0.06) * 100), step=0.5, format="%.1f",
-                key=f"dt_{selected_formation}_{stream_key}",
-            ) / 100.0,
-        }
-    return new_p
+    cfg = _STREAM_CONFIG[stream_key]
+    qi_unit = cfg["qi_unit"]
+    b_now = float(p.get("b", 1.2))
+
+    cols = st.columns(6)
+    with cols[0]:
+        ramp_months = st.number_input(
+            "Ramp months", min_value=0, max_value=24,
+            value=int(p.get("ramp_months", 0)), step=1,
+            key=f"ramp_{selected_formation}_{stream_key}",
+        )
+    with cols[1]:
+        q_ramp = st.number_input(
+            f"Ramp start ({qi_unit})", min_value=0.0,
+            value=float(p.get("q_ramp", 0.0)), step=10.0, format="%.1f",
+            key=f"q_ramp_{selected_formation}_{stream_key}",
+        )
+    with cols[2]:
+        qi = st.number_input(
+            f"qi ({qi_unit})", min_value=0.0,
+            value=float(p.get("qi", 100.0)), step=10.0, format="%.1f",
+            key=f"qi_{selected_formation}_{stream_key}",
+        )
+    with cols[3]:
+        # Convert stored nominal annual → effective for the input
+        di_eff_default = nominal_annual_to_effective_annual(
+            float(p.get("di_annual", 0.80)), b_now,
+        ) * 100.0
+        di_eff_pct = st.number_input(
+            "Di annual (effective %)", min_value=0.1, max_value=99.9,
+            value=float(min(max(di_eff_default, 0.1), 99.9)),
+            step=1.0, format="%.1f",
+            key=f"di_{selected_formation}_{stream_key}",
+            help="Effective annual decline rate. Always between 0% and 100%. "
+                 "Differs from nominal: a 70% effective decline ≈ 250%+ nominal.",
+        )
+    with cols[4]:
+        b = st.number_input(
+            "b factor", min_value=0.01, max_value=2.0,
+            value=b_now, step=0.05, format="%.2f",
+            key=f"b_{selected_formation}_{stream_key}",
+        )
+    with cols[5]:
+        dt_eff_default = nominal_annual_to_effective_annual(
+            float(p.get("dt_annual", 0.06)), b_now,
+        ) * 100.0
+        dt_eff_pct = st.number_input(
+            "Dt annual (effective %)", min_value=0.1, max_value=30.0,
+            value=float(min(max(dt_eff_default, 0.1), 30.0)),
+            step=0.5, format="%.1f",
+            key=f"dt_{selected_formation}_{stream_key}",
+            help="Terminal effective decline. Switches from hyperbolic to "
+                 "exponential when instantaneous decline reaches this level.",
+        )
+
+    # Convert effective % entered by user → nominal annual for storage
+    di_annual = effective_annual_to_nominal_annual(di_eff_pct / 100.0, b)
+    dt_annual = effective_annual_to_nominal_annual(dt_eff_pct / 100.0, b)
+
+    return {
+        "ramp_months": ramp_months,
+        "q_ramp":      q_ramp,
+        "qi":          qi,
+        "di_annual":   di_annual,
+        "b":           b,
+        "dt_annual":   dt_annual,
+    }
+
+
+def _render_phase_section(
+    selected_formation: str,
+    stream_key: str,
+    tc: dict,
+    n_months: int = 600,
+):
+    """Render one phase section: parameter row + rate chart + cumulative chart.
+    Returns the active monthly-volume profile for that stream."""
+    cfg = _STREAM_CONFIG[stream_key]
+    label = cfg["label"]
+
+    st.markdown(f"### {label}")
+
+    # 1. Parameter inputs (horizontal)
+    new_p = _stream_param_inputs(selected_formation, stream_key)
+    params = st.session_state.tc_params[selected_formation]
+    if new_p != params[stream_key]:
+        params[stream_key] = new_p
+        st.session_state.tc_params[selected_formation] = params
+
+    active = generate_type_curve_profile(params[stream_key], n_months)
+
+    # 2. Rate chart
+    p10_key = "p10" if stream_key == "oil" else f"{stream_key}_p10"
+    p50_key = "p50" if stream_key == "oil" else f"{stream_key}_p50"
+    p90_key = "p90" if stream_key == "oil" else f"{stream_key}_p90"
+    rate_traces = tc.get("traces", []) if stream_key == "oil" else []  # oil-only
+    st.plotly_chart(
+        type_curve_chart(
+            offset_traces=rate_traces,
+            p10=tc.get(p10_key, np.full(120, np.nan)),
+            p50=tc.get(p50_key, np.full(120, np.nan)),
+            p90=tc.get(p90_key, np.full(120, np.nan)),
+            formation=selected_formation,
+            n_wells=tc.get("n_wells", 0),
+            active_curve=active,
+            phase_label=label,
+            y_title=cfg["rate_y_title"],
+        ),
+        use_container_width=True,
+    )
+
+    # 3. Cumulative chart
+    cum_p10_key = "cum_p10" if stream_key == "oil" else f"cum_{stream_key}_p10"
+    cum_p50_key = "cum_p50" if stream_key == "oil" else f"cum_{stream_key}_p50"
+    cum_p90_key = "cum_p90" if stream_key == "oil" else f"cum_{stream_key}_p90"
+    st.plotly_chart(
+        cumulative_type_curve_chart(
+            offset_traces=rate_traces,
+            cum_p10=tc.get(cum_p10_key, np.full(120, np.nan)),
+            cum_p50=tc.get(cum_p50_key, np.full(120, np.nan)),
+            cum_p90=tc.get(cum_p90_key, np.full(120, np.nan)),
+            formation=selected_formation,
+            active_curve=active,
+            phase_label=label,
+            cum_unit_short=cfg["cum_unit_short"],
+            cum_unit_scale=cfg["cum_unit_scale"],
+        ),
+        use_container_width=True,
+    )
+
+    return active
 
 
 def render():
@@ -72,6 +201,12 @@ def render():
     formation_options = FORMATIONS + extra
 
     valid_sw = section_wells.dropna(subset=["latitude", "longitude"])
+    if valid_sw.empty:
+        st.warning(
+            "Section wells have no coordinates — map and offset distance "
+            "calculations are unavailable. Type curve will use the basin "
+            "centroid as a placeholder."
+        )
     center_lat = valid_sw["latitude"].mean() if not valid_sw.empty else 31.5
     center_lon = valid_sw["longitude"].mean() if not valid_sw.empty else -104.0
     _section_apis_t = tuple(sorted(section_wells["api"].tolist()))
@@ -162,101 +297,54 @@ def render():
                 "gas":   {**sp.get("gas",   {}), "ramp_months": 0, "q_ramp": 0.0},
                 "water": {**sp.get("water", {}), "ramp_months": 0, "q_ramp": 0.0},
             }
-        params = st.session_state.tc_params[selected_formation]
 
-        st.markdown("#### Type Curve Parameters")
-        p_col_oil, p_col_gas, p_col_water = st.columns(3)
-
-        new_oil   = _stream_inputs(p_col_oil,   selected_formation, "oil",   "Oil",   "BOPD/10kft")
-        new_gas   = _stream_inputs(p_col_gas,   selected_formation, "gas",   "Gas",   "MCF/d/10kft")
-        new_water = _stream_inputs(p_col_water, selected_formation, "water", "Water", "BWPD/10kft")
-
-        if (new_oil != params["oil"] or new_gas != params["gas"] or new_water != params["water"]):
-            st.session_state.tc_params[selected_formation] = {
-                "oil": new_oil, "gas": new_gas, "water": new_water,
-            }
-            params = st.session_state.tc_params[selected_formation]
-
+        # ── Comp-set stats + CSV export bar (above the 3 phase sections) ────
         N_MONTHS = 600
-        active_oil   = generate_type_curve_profile(params["oil"],   N_MONTHS)
-        active_gas   = generate_type_curve_profile(params["gas"],   N_MONTHS)
-        active_water = generate_type_curve_profile(params["water"], N_MONTHS)
+        # Pre-build profiles to compute EUR for the stats card and for export
+        params = st.session_state.tc_params[selected_formation]
+        active_oil_preview   = generate_type_curve_profile(params["oil"],   N_MONTHS)
+        active_gas_preview   = generate_type_curve_profile(params["gas"],   N_MONTHS)
+        active_water_preview = generate_type_curve_profile(params["water"], N_MONTHS)
 
-        # Oil type curve chart + stats
-        chart_col, stats_col = st.columns([3, 1])
-        with chart_col:
-            st.plotly_chart(
-                type_curve_chart(
-                    tc["traces"], tc["p10"], tc["p50"], tc["p90"],
-                    formation=selected_formation, n_wells=tc["n_wells"],
-                    active_curve=active_oil,
-                ),
-                use_container_width=True,
-            )
-            if not offset_names:
-                st.caption("Using default comp set (same formation name).")
-            if tc["excluded"] > 0:
-                st.caption(f"{tc['excluded']} wells excluded (missing lateral or production data).")
-
-        with stats_col:
-            st.markdown("#### Comp Set Stats")
+        stat_a, stat_b, stat_c, stat_d, stat_e = st.columns([1, 1, 1, 1.2, 1.4])
+        with stat_a:
             st.metric("Wells in comp set", tc["n_wells"])
+        with stat_b:
             st.metric("Median lateral", f"{tc['median_lateral']:,.0f} ft")
-            eur_per_ft = float(np.nansum(active_oil)) / 10_000
-            st.metric("EUR/ft (active)", f"{eur_per_ft:.1f} BO/ft")
+        with stat_c:
+            eur_per_ft = float(np.nansum(active_oil_preview)) / 10_000
+            st.metric("EUR/ft (oil)", f"{eur_per_ft:.1f} BO/ft")
+        with stat_d:
             if offsets is not None and not offsets.empty and "first_prod_date" in offsets.columns:
                 dates = offsets["first_prod_date"].dropna()
                 if not dates.empty:
                     st.metric("Comp date range",
                               f"{dates.min().strftime('%m/%Y')} – {dates.max().strftime('%m/%Y')}")
-
-            st.markdown("---")
+        with stat_e:
+            st.write("")  # vertical alignment
             csv_str = export_type_curve_csv(
-                selected_formation, active_oil, active_gas, active_water
+                selected_formation, active_oil_preview, active_gas_preview, active_water_preview
             )
             st.download_button(
-                label="Export CSV",
+                label="Export type curve CSV",
                 data=csv_str,
                 file_name=f"type_curve_{selected_formation.replace(' ','_')}_{_date.today()}.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
 
-        # Cumulative oil chart
-        st.plotly_chart(
-            cumulative_type_curve_chart(
-                offset_traces=tc["traces"],
-                cum_p10=tc.get("cum_p10", np.full(120, np.nan)),
-                cum_p50=tc.get("cum_p50", np.full(120, np.nan)),
-                cum_p90=tc.get("cum_p90", np.full(120, np.nan)),
-                formation=selected_formation,
-                active_curve=active_oil,
-            ),
-            use_container_width=True,
-        )
+        if not offset_names:
+            st.caption("Using default comp set (same formation name).")
+        if tc["excluded"] > 0:
+            st.caption(f"{tc['excluded']} wells excluded (missing lateral or production data).")
 
-        # Gas/water mini-charts
-        gas_chart_col, water_chart_col = st.columns(2)
-        with gas_chart_col:
-            st.plotly_chart(
-                stream_type_curve_chart(
-                    p50=tc.get("gas_p50", np.full(120, np.nan)),
-                    active_curve=active_gas,
-                    title=f"Gas — {selected_formation}",
-                    y_title="Gas Rate (MCF/d / 10,000 ft lateral)",
-                ),
-                use_container_width=True,
-            )
-        with water_chart_col:
-            st.plotly_chart(
-                stream_type_curve_chart(
-                    p50=tc.get("water_p50", np.full(120, np.nan)),
-                    active_curve=active_water,
-                    title=f"Water — {selected_formation}",
-                    y_title="Water Rate (BWPD / 10,000 ft lateral)",
-                ),
-                use_container_width=True,
-            )
+        # ── Three symmetric phase sections ───────────────────────────────────
+        st.markdown("---")
+        _render_phase_section(selected_formation, "oil",   tc, n_months=N_MONTHS)
+        st.markdown("---")
+        _render_phase_section(selected_formation, "gas",   tc, n_months=N_MONTHS)
+        st.markdown("---")
+        _render_phase_section(selected_formation, "water", tc, n_months=N_MONTHS)
 
     # Remaining locations
     st.markdown("---")

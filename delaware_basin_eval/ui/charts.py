@@ -68,26 +68,30 @@ def section_map(
 ) -> go.Figure:
     """
     Scatter mapbox showing in-section wells colored by formation,
-    offset wells in gray, and optional shapefile boundary.
+    offset wells colored by formation (smaller/lower opacity), and
+    optional shapefile boundary.
     """
     fig = go.Figure()
 
-    # Offset wells (background layer)
+    # Offset wells (background layer) — one trace per formation so colors
+    # match the formation_well_count_chart palette
     if offset_wells is not None and not offset_wells.empty:
         off = offset_wells.dropna(subset=["latitude", "longitude"])
-        fig.add_trace(go.Scattermapbox(
-            lat=off["latitude"],
-            lon=off["longitude"],
-            mode="markers",
-            marker=dict(size=5, color="lightgray", opacity=0.5),
-            name="Offset wells",
-            hovertemplate=(
-                "<b>%{customdata[0]}</b><br>"
-                "Formation: %{customdata[1]}<br>"
-                "Operator: %{customdata[2]}<extra></extra>"
-            ),
-            customdata=off[["well_name", "formation", "operator"]].fillna("—").values,
-        ))
+        for formation in off["formation"].fillna("Unknown").unique():
+            grp = off[off["formation"].fillna("Unknown") == formation]
+            fig.add_trace(go.Scattermapbox(
+                lat=grp["latitude"],
+                lon=grp["longitude"],
+                mode="markers",
+                marker=dict(size=6, color=_formation_color(formation), opacity=0.7),
+                name=f"Offset · {formation}",
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "Formation: " + formation + "<br>"
+                    "Operator: %{customdata[1]}<extra></extra>"
+                ),
+                customdata=grp[["well_name", "operator"]].fillna("—").values,
+            ))
 
     # In-section wells colored by formation
     if not section_wells.empty:
@@ -234,13 +238,17 @@ def type_curve_chart(
     n_wells: int = 0,
     active_curve: np.ndarray | None = None,
     active_label: str = "Active Type Curve",
+    phase_label: str = "Oil",
     y_title: str = "Oil Rate (BOPD / 10,000 ft lateral)",
     days_per_month: float = 30.44,
+    height: int = 420,
 ) -> go.Figure:
     """
     Normalized offset well traces + P10/P50/P90 band.
     Optional active_curve overlay (user-adjusted type curve) shown in red.
     active_curve is monthly volumes — converted to daily rates for display.
+    Pass offset_traces=[] to skip per-well faint lines (used for gas/water
+    where per-well traces aren't stored).
     """
     fig = go.Figure()
     months = np.arange(len(p50))
@@ -295,54 +303,13 @@ def type_curve_chart(
         ))
 
     fig.update_layout(
-        title=f"Type Curve — {formation} ({n_wells} offset wells, normalized to 10,000 ft)",
+        title=f"{phase_label} Type Curve — {formation} ({n_wells} offset wells, normalized to 10,000 ft)",
         xaxis_title="Months on Production",
         yaxis_title=y_title,
         yaxis_type="log",
-        height=420,
+        height=height,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(t=80),
-    )
-    return fig
-
-
-def stream_type_curve_chart(
-    p50: np.ndarray,
-    active_curve: np.ndarray | None,
-    title: str,
-    y_title: str,
-    days_per_month: float = 30.44,
-) -> go.Figure:
-    """
-    Compact chart for gas or water stream: P50 statistical trace + active curve overlay.
-    """
-    fig = go.Figure()
-    months = np.arange(len(p50))
-    p50_rates = np.nan_to_num(p50, nan=0.0) / days_per_month
-
-    fig.add_trace(go.Scatter(
-        x=months, y=p50_rates,
-        mode="lines", line=dict(color="steelblue", width=2.5, dash="dash"),
-        name="P50",
-    ))
-
-    if active_curve is not None:
-        active_rates = np.asarray(active_curve, dtype=float) / days_per_month
-        active_months = np.arange(len(active_rates))
-        fig.add_trace(go.Scatter(
-            x=active_months, y=active_rates,
-            mode="lines", line=dict(color="crimson", width=2.5),
-            name="Active",
-        ))
-
-    fig.update_layout(
-        title=title,
-        xaxis_title="Months on Production",
-        yaxis_title=y_title,
-        yaxis_type="log",
-        height=280,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(t=60, b=40),
     )
     return fig
 
@@ -355,22 +322,33 @@ def cumulative_type_curve_chart(
     formation: str = "",
     active_curve: np.ndarray | None = None,
     active_label: str = "Active Type Curve",
+    phase_label: str = "Oil",
+    cum_unit_short: str = "MBO",
+    cum_unit_scale: float = 1_000.0,
     days_per_month: float = 30.44,
+    height: int = 380,
 ) -> go.Figure:
     """
-    Cumulative oil chart for type curve calibration.
-    offset_traces: same format as type_curve_chart — daily rates (BOPD / 10k ft)
-    cum_p10/p50/p90: cumulative BBL per 10k ft from build_type_curve
-    active_curve: monthly volumes (BBL per 10k ft) from generate_type_curve_profile
+    Cumulative chart for type curve calibration.
+
+    offset_traces: same format as type_curve_chart — daily rates per 10k ft.
+                   Pass [] to skip per-well faint cumulative lines (used
+                   for gas/water where per-well traces aren't stored).
+    cum_p10/p50/p90: cumulative volume per 10k ft from build_type_curve
+                     (BBL for oil/water, MCF for gas).
+    active_curve:  monthly volumes from generate_type_curve_profile.
+    cum_unit_short: display unit ("MBO", "MMCF", "MBW").
+    cum_unit_scale: divisor to convert raw volume → display unit
+                    (1000 for MBO/MBW, 1000 for MMCF since input is MCF).
     """
     fig = go.Figure()
 
-    # Per-well faint cumulative traces
+    # Per-well faint cumulative traces (skipped if offset_traces is empty)
     for i, t in enumerate(offset_traces):
         rates = np.array(t["rates"], dtype=float)
-        cum_mbo = np.cumsum(rates * days_per_month) / 1_000
+        cum = np.cumsum(rates * days_per_month) / cum_unit_scale
         fig.add_trace(go.Scatter(
-            x=t["months"], y=cum_mbo,
+            x=t["months"], y=cum,
             mode="lines", line=dict(color="lightsteelblue", width=1),
             opacity=0.25,
             name="Offset wells" if i == 0 else None,
@@ -378,46 +356,46 @@ def cumulative_type_curve_chart(
         ))
 
     months = np.arange(len(cum_p50))
-    p10_mbo = np.nan_to_num(cum_p10, nan=0.0) / 1_000
-    p50_mbo = np.nan_to_num(cum_p50, nan=0.0) / 1_000
-    p90_mbo = np.nan_to_num(cum_p90, nan=0.0) / 1_000
+    p10_disp = np.nan_to_num(cum_p10, nan=0.0) / cum_unit_scale
+    p50_disp = np.nan_to_num(cum_p50, nan=0.0) / cum_unit_scale
+    p90_disp = np.nan_to_num(cum_p90, nan=0.0) / cum_unit_scale
 
     fig.add_trace(go.Scatter(
         x=np.concatenate([months, months[::-1]]),
-        y=np.concatenate([p10_mbo, p90_mbo[::-1]]),
+        y=np.concatenate([p10_disp, p90_disp[::-1]]),
         fill="toself", fillcolor="rgba(31,119,180,0.10)",
         line=dict(color="rgba(255,255,255,0)"),
         name="P10–P90", hoverinfo="skip",
     ))
     fig.add_trace(go.Scatter(
-        x=months, y=p10_mbo,
+        x=months, y=p10_disp,
         mode="lines", line=dict(color="rgba(31,119,180,0.5)", width=1.5, dash="dot"),
         name="P10",
     ))
     fig.add_trace(go.Scatter(
-        x=months, y=p90_mbo,
+        x=months, y=p90_disp,
         mode="lines", line=dict(color="rgba(31,119,180,0.5)", width=1.5, dash="dot"),
         name="P90",
     ))
     fig.add_trace(go.Scatter(
-        x=months, y=p50_mbo,
+        x=months, y=p50_disp,
         mode="lines", line=dict(color="steelblue", width=3),
         name="P50",
     ))
 
     if active_curve is not None:
-        active_cum_mbo = np.cumsum(np.asarray(active_curve, dtype=float)) / 1_000
+        active_cum_disp = np.cumsum(np.asarray(active_curve, dtype=float)) / cum_unit_scale
         fig.add_trace(go.Scatter(
-            x=np.arange(len(active_cum_mbo)), y=active_cum_mbo,
+            x=np.arange(len(active_cum_disp)), y=active_cum_disp,
             mode="lines", line=dict(color="crimson", width=2.5),
             name=active_label,
         ))
 
     fig.update_layout(
-        title=f"Cumulative Oil — {formation} (normalized to 10,000 ft)",
+        title=f"Cumulative {phase_label} — {formation} (normalized to 10,000 ft)",
         xaxis_title="Months on Production",
-        yaxis_title="Cumulative Oil (MBO / 10,000 ft lateral)",
-        height=380,
+        yaxis_title=f"Cumulative {phase_label} ({cum_unit_short} / 10,000 ft lateral)",
+        height=height,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(t=80),
     )
