@@ -12,15 +12,26 @@ from economics.cashflow import build_undrilled_well_cashflow
 from economics.metrics import well_economics, portfolio_irr
 
 
+def _safe_first(arr) -> float:
+    if arr is None:
+        return 0.0
+    try:
+        v = float(arr[0])
+        return v if np.isfinite(v) else 0.0
+    except (IndexError, TypeError, ValueError):
+        return 0.0
+
+
 def _build_tc_params(formation: str, tc: dict) -> dict:
-    """Pick user-adjusted tc_params for this formation, or fall back to suggested."""
+    """Pick user-adjusted tc_params for this formation, or fall back to suggested.
+    Defaults: ramp_months=1, q_ramp = P50[0] for each phase."""
     if formation in st.session_state.tc_params:
         return st.session_state.tc_params[formation]
     sp = tc.get("suggested_params", {})
     return {
-        "oil":   {**sp.get("oil",   {}), "ramp_months": 0, "q_ramp": 0.0},
-        "gas":   {**sp.get("gas",   {}), "ramp_months": 0, "q_ramp": 0.0},
-        "water": {**sp.get("water", {}), "ramp_months": 0, "q_ramp": 0.0},
+        "oil":   {**sp.get("oil",   {}), "ramp_months": 1, "q_ramp": _safe_first(tc.get("p50"))},
+        "gas":   {**sp.get("gas",   {}), "ramp_months": 1, "q_ramp": _safe_first(tc.get("gas_p50"))},
+        "water": {**sp.get("water", {}), "ramp_months": 1, "q_ramp": _safe_first(tc.get("water_p50"))},
     }
 
 
@@ -254,9 +265,9 @@ def render():
                         if tc_p2 is None:
                             sp2 = tc2.get("suggested_params", {})
                             tc_p2 = {
-                                "oil":   {**sp2.get("oil",   {}), "ramp_months": 0, "q_ramp": 0.0},
-                                "gas":   {**sp2.get("gas",   {}), "ramp_months": 0, "q_ramp": 0.0},
-                                "water": {**sp2.get("water", {}), "ramp_months": 0, "q_ramp": 0.0},
+                                "oil":   {**sp2.get("oil",   {}), "ramp_months": 1, "q_ramp": _safe_first(tc2.get("p50"))},
+                                "gas":   {**sp2.get("gas",   {}), "ramp_months": 1, "q_ramp": _safe_first(tc2.get("gas_p50"))},
+                                "water": {**sp2.get("water", {}), "ramp_months": 1, "q_ramp": _safe_first(tc2.get("water_p50"))},
                             }
                         cf2 = _undrilled_well_cf(tc_p2, alt_cfg, fm2)
                         e2  = well_economics(cf2, alt_cfg["discount_rate"])

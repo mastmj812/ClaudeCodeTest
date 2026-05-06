@@ -10,6 +10,7 @@ from ui.charts import (
     section_map, type_curve_chart, formation_well_count_chart,
     cumulative_type_curve_chart,
 )
+from data.directional import attach_heels
 from engineering.type_curve import generate_type_curve_profile, export_type_curve_csv
 from engineering.decline import (
     nominal_annual_to_effective_annual,
@@ -17,6 +18,23 @@ from engineering.decline import (
 )
 from engineering.spacing import remaining_locations
 from config import FORMATIONS
+
+try:
+    from streamlit_plotly_events import plotly_events
+    HAS_PLOTLY_EVENTS = True
+except ImportError:
+    HAS_PLOTLY_EVENTS = False
+
+
+def _safe_first_value(arr) -> float:
+    """Return float(arr[0]) if finite, else 0.0. Used as default ramp-start."""
+    if arr is None:
+        return 0.0
+    try:
+        v = float(arr[0])
+        return v if np.isfinite(v) else 0.0
+    except (IndexError, TypeError, ValueError):
+        return 0.0
 
 
 # Per-stream display config
@@ -152,44 +170,48 @@ def _render_phase_section(
 
     active = generate_type_curve_profile(params[stream_key], n_months)
 
-    # 2. Rate chart
+    # 2 + 3. Rate chart (left) and cumulative chart (right) side-by-side
     p10_key = "p10" if stream_key == "oil" else f"{stream_key}_p10"
     p50_key = "p50" if stream_key == "oil" else f"{stream_key}_p50"
     p90_key = "p90" if stream_key == "oil" else f"{stream_key}_p90"
-    rate_traces = tc.get("traces", []) if stream_key == "oil" else []  # oil-only
-    st.plotly_chart(
-        type_curve_chart(
-            offset_traces=rate_traces,
-            p10=tc.get(p10_key, np.full(120, np.nan)),
-            p50=tc.get(p50_key, np.full(120, np.nan)),
-            p90=tc.get(p90_key, np.full(120, np.nan)),
-            formation=selected_formation,
-            n_wells=tc.get("n_wells", 0),
-            active_curve=active,
-            phase_label=label,
-            y_title=cfg["rate_y_title"],
-        ),
-        use_container_width=True,
-    )
-
-    # 3. Cumulative chart
     cum_p10_key = "cum_p10" if stream_key == "oil" else f"cum_{stream_key}_p10"
     cum_p50_key = "cum_p50" if stream_key == "oil" else f"cum_{stream_key}_p50"
     cum_p90_key = "cum_p90" if stream_key == "oil" else f"cum_{stream_key}_p90"
-    st.plotly_chart(
-        cumulative_type_curve_chart(
-            offset_traces=rate_traces,
-            cum_p10=tc.get(cum_p10_key, np.full(120, np.nan)),
-            cum_p50=tc.get(cum_p50_key, np.full(120, np.nan)),
-            cum_p90=tc.get(cum_p90_key, np.full(120, np.nan)),
-            formation=selected_formation,
-            active_curve=active,
-            phase_label=label,
-            cum_unit_short=cfg["cum_unit_short"],
-            cum_unit_scale=cfg["cum_unit_scale"],
-        ),
-        use_container_width=True,
-    )
+    rate_traces = tc.get("traces", []) if stream_key == "oil" else []  # oil-only
+
+    rate_col, cum_col = st.columns([1, 1])
+    with rate_col:
+        st.plotly_chart(
+            type_curve_chart(
+                offset_traces=rate_traces,
+                p10=tc.get(p10_key, np.full(120, np.nan)),
+                p50=tc.get(p50_key, np.full(120, np.nan)),
+                p90=tc.get(p90_key, np.full(120, np.nan)),
+                formation=selected_formation,
+                n_wells=tc.get("n_wells", 0),
+                active_curve=active,
+                phase_label=label,
+                y_title=cfg["rate_y_title"],
+                height=380,
+            ),
+            use_container_width=True,
+        )
+    with cum_col:
+        st.plotly_chart(
+            cumulative_type_curve_chart(
+                offset_traces=rate_traces,
+                cum_p10=tc.get(cum_p10_key, np.full(120, np.nan)),
+                cum_p50=tc.get(cum_p50_key, np.full(120, np.nan)),
+                cum_p90=tc.get(cum_p90_key, np.full(120, np.nan)),
+                formation=selected_formation,
+                active_curve=active,
+                phase_label=label,
+                cum_unit_short=cfg["cum_unit_short"],
+                cum_unit_scale=cfg["cum_unit_scale"],
+                height=380,
+            ),
+            use_container_width=True,
+        )
 
     return active
 
@@ -225,7 +247,11 @@ def render():
     # Formation selector + comp set
     sel_col, comp_col = st.columns([2, 3])
     with sel_col:
-        selected_formation = st.selectbox("Formation for type curve", options=formation_options)
+        selected_formation = st.selectbox(
+            "Formation for type curve",
+            options=formation_options,
+            key="selected_formation_tab3",
+        )
     with comp_col:
         saved_names = st.session_state.formation_name_map.get(selected_formation)
         if saved_names is None:
@@ -246,17 +272,32 @@ def render():
     # Top row: map + formation well-count chart
     map_col, count_col = st.columns([3, 2])
 
+    aoi_gdf = st.session_state.get("offset_aoi_gdf")
+    aoi_geojson = st.session_state.get("offset_aoi_geojson") if aoi_gdf is not None else None
+
     with map_col:
         _map_fnames = effective_fnames if effective_fnames else [selected_formation]
         map_offsets = cache.map_offsets(
             _data_version, tuple(sorted(_map_fnames)),
             center_lat, center_lon, cfg["offset_radius_mi"], _section_apis_t,
         )
+
+        # Lazily extract heel coords for the wells we're about to draw
+        from data.directional import ensure_heels_for
+        needed_apis = set(section_wells["api"])
+        if not map_offsets.empty:
+            needed_apis |= set(map_offsets["api"])
+        if st.session_state.get("dir_surveys_path") and needed_apis:
+            with st.spinner("Loading heel coordinates from directional surveys…"):
+                heels = ensure_heels_for(needed_apis)
+        else:
+            heels = st.session_state.get("heels", {}) or {}
         st.plotly_chart(
             section_map(
-                section_wells,
-                offset_wells=map_offsets if not map_offsets.empty else None,
-                radius_miles=cfg["offset_radius_mi"],
+                attach_heels(section_wells, heels),
+                offset_wells=attach_heels(map_offsets, heels) if not map_offsets.empty else None,
+                radius_miles=None if aoi_gdf is not None else cfg["offset_radius_mi"],
+                polygon_geojson=aoi_geojson,
                 center_lat=center_lat, center_lon=center_lon,
             ),
             use_container_width=True,
@@ -268,10 +309,21 @@ def render():
                 _data_version, center_lat, center_lon,
                 cfg["offset_radius_mi"], cfg["max_well_age_yr"], _section_apis_t,
             )
-        st.plotly_chart(
-            formation_well_count_chart(well_counts),
-            use_container_width=True,
-        )
+        bar_fig = formation_well_count_chart(well_counts)
+        if HAS_PLOTLY_EVENTS and well_counts:
+            clicks = plotly_events(
+                bar_fig,
+                click_event=True,
+                override_height=max(250, len(well_counts) * 35 + 80),
+                key=f"formation_bar_clicks_v{_data_version}",
+            )
+            if clicks:
+                clicked = clicks[0].get("y")
+                if clicked and clicked != selected_formation and clicked in formation_options:
+                    st.session_state.selected_formation_tab3 = clicked
+                    st.rerun()
+        else:
+            st.plotly_chart(bar_fig, use_container_width=True)
 
     # Build type curve
     tc, offsets = None, None
@@ -299,13 +351,17 @@ def render():
                 f"→ lateral {fc.get('after_lateral','?')} → radius {fc.get('after_radius','?')}"
             )
     elif tc is not None:
-        # Initialize tc_params from suggested_params on first load
+        # Initialize tc_params from suggested_params on first load.
+        # Defaults: ramp_months=1, ramp-start q_ramp = P50 value at month 0.
         if selected_formation not in st.session_state.tc_params:
             sp = tc.get("suggested_params", {})
             st.session_state.tc_params[selected_formation] = {
-                "oil":   {**sp.get("oil",   {}), "ramp_months": 0, "q_ramp": 0.0},
-                "gas":   {**sp.get("gas",   {}), "ramp_months": 0, "q_ramp": 0.0},
-                "water": {**sp.get("water", {}), "ramp_months": 0, "q_ramp": 0.0},
+                "oil":   {**sp.get("oil",   {}), "ramp_months": 1,
+                          "q_ramp": _safe_first_value(tc.get("p50"))},
+                "gas":   {**sp.get("gas",   {}), "ramp_months": 1,
+                          "q_ramp": _safe_first_value(tc.get("gas_p50"))},
+                "water": {**sp.get("water", {}), "ramp_months": 1,
+                          "q_ramp": _safe_first_value(tc.get("water_p50"))},
             }
 
         # ── Comp-set stats + CSV export bar (above the 3 phase sections) ────

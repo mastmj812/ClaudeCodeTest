@@ -20,10 +20,18 @@ from config import (
 
 
 try:
-    from utils.geo import read_shapefile_zip
+    from utils.geo import read_shapefile_zip, geojson_to_gdf
     HAS_GEO = True
 except ImportError:
     HAS_GEO = False
+
+try:
+    import folium
+    from folium.plugins import Draw
+    from streamlit_folium import st_folium
+    HAS_FOLIUM = True
+except ImportError:
+    HAS_FOLIUM = False
 
 st.set_page_config(
     page_title="Delaware Basin Evaluator",
@@ -66,13 +74,27 @@ def _init_state():
         "well_params_override": {},
         # per-formation type curve params {formation → {oil, gas, water: {qi, di_annual, b, dt_annual, ramp_months, q_ramp}}}
         "tc_params": {},
-        # bumped whenever wells_df / prod_df / section_wells / section_prod change;
+        # bumped whenever wells_df / prod_df / section_wells / section_prod / AOI change;
         # used as the cache key for _cached_* functions so they invalidate on data change
         "data_version": 0,
+        # offset-area-of-interest (drawn polygon) — overrides radius filter when set
+        "offset_aoi_geojson": None,
+        "offset_aoi_gdf":     None,
+        # directional surveys (optional) — path to the cached CSV on disk
+        "dir_surveys_path": None,
+        # extracted heel coords {api: (heel_lat, heel_lon)} — populated lazily
+        "heels": {},
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+    # Auto-detect a previously cached directional surveys file
+    if st.session_state.dir_surveys_path is None:
+        from pathlib import Path
+        existing = Path("data_cache") / "directional_surveys.csv"
+        if existing.exists():
+            st.session_state.dir_surveys_path = str(existing)
 
 _init_state()
 
@@ -181,6 +203,46 @@ with st.sidebar:
                 st.success("Mapping applied. Re-select your section.")
                 st.rerun()
 
+    # 2b. Directional surveys (optional) — for heel→BH lateral sticks on the map
+    if st.session_state.wells_df is not None:
+        with st.expander("📐 2b. Directional Surveys (optional)", expanded=False):
+            st.caption(
+                "Upload directional surveys to draw lateral sticks from **heel→BH** "
+                "instead of surface→BH. Without surveys, the existing surface→BH "
+                "fallback still works."
+            )
+            dir_file = st.file_uploader(
+                "Directional surveys CSV",
+                type=["csv"],
+                help="Enverus / Drillinginfo sampled directional surveys export.",
+                key="dir_surveys_uploader",
+            )
+            if dir_file is not None:
+                if st.button("Save & use", type="primary", use_container_width=True):
+                    from pathlib import Path
+                    cache_dir = Path("data_cache")
+                    cache_dir.mkdir(exist_ok=True)
+                    dest = cache_dir / "directional_surveys.csv"
+                    with open(dest, "wb") as f:
+                        f.write(dir_file.getbuffer())
+                    # New file → invalidate prior heels cache
+                    (cache_dir / "heels.parquet").unlink(missing_ok=True)
+                    st.session_state.dir_surveys_path = str(dest)
+                    st.session_state.heels = {}
+                    st.session_state.data_version += 1
+                    st.success(f"Saved ({dest.stat().st_size / 1e6:.1f} MB). Heels will rebuild on demand.")
+                    st.rerun()
+            elif st.session_state.dir_surveys_path:
+                st.caption(f"Currently using: `{st.session_state.dir_surveys_path}`")
+                if st.button("Clear surveys", use_container_width=True):
+                    st.session_state.dir_surveys_path = None
+                    st.session_state.heels = {}
+                    from pathlib import Path
+                    (Path("data_cache") / "directional_surveys.csv").unlink(missing_ok=True)
+                    (Path("data_cache") / "heels.parquet").unlink(missing_ok=True)
+                    st.session_state.data_version += 1
+                    st.rerun()
+
     # 3. Section selection
     if st.session_state.wells_df is not None:
         with st.expander("📍 3. Select Section", expanded=st.session_state.section_wells is None):
@@ -238,10 +300,113 @@ with st.sidebar:
     # 4. Offset filter
     if st.session_state.section_wells is not None:
         with st.expander("🔍 4. Offset Filter"):
-            offset_radius = st.slider(
-                "Offset radius (miles)", 1, 25,
-                int(DEFAULT_OFFSET_RADIUS_MI), 1,
+            offset_mode = st.radio(
+                "Filter mode",
+                ["Radius", "Draw AOI"],
+                horizontal=True,
+                key="offset_mode",
+                help="Radius: simple circle around the section. Draw AOI: sketch a custom area on the map.",
             )
+
+            offset_radius = int(DEFAULT_OFFSET_RADIUS_MI)
+
+            if offset_mode == "Radius":
+                # Switching back to radius mode: drop any active AOI polygon
+                if st.session_state.offset_aoi_gdf is not None:
+                    st.session_state.offset_aoi_gdf = None
+                    st.session_state.data_version += 1
+                offset_radius = st.slider(
+                    "Offset radius (miles)", 1, 25,
+                    int(DEFAULT_OFFSET_RADIUS_MI), 1,
+                )
+            else:
+                if not HAS_FOLIUM:
+                    st.error(
+                        "Drawing requires `streamlit-folium` and `folium`. "
+                        "Run `pip install -r requirements.txt` and restart."
+                    )
+                    offset_radius = st.slider(
+                        "Offset radius (miles)", 1, 25,
+                        int(DEFAULT_OFFSET_RADIUS_MI), 1,
+                    )
+                else:
+                    # Center on section centroid for the draw map
+                    sec = st.session_state.section_wells
+                    valid_sec = sec.dropna(subset=["latitude", "longitude"])
+                    if not valid_sec.empty:
+                        clat = float(valid_sec["latitude"].mean())
+                        clon = float(valid_sec["longitude"].mean())
+                    else:
+                        clat, clon = 31.5, -104.0
+
+                    fmap = folium.Map(location=[clat, clon], zoom_start=11, control_scale=True)
+                    Draw(
+                        export=False,
+                        position="topleft",
+                        draw_options={
+                            "polyline":  False,
+                            "circle":    False,
+                            "circlemarker": False,
+                            "marker":    False,
+                            "rectangle": True,
+                            "polygon":   True,
+                        },
+                        edit_options={"edit": True, "remove": True},
+                    ).add_to(fmap)
+
+                    # Plot section wells as markers for visual reference
+                    for _, w in valid_sec.iterrows():
+                        folium.CircleMarker(
+                            location=[w["latitude"], w["longitude"]],
+                            radius=4, color="#ff6600", fill=True, fill_opacity=0.8,
+                        ).add_to(fmap)
+
+                    # If a polygon was previously applied, render it
+                    if st.session_state.offset_aoi_geojson:
+                        folium.GeoJson(
+                            st.session_state.offset_aoi_geojson,
+                            style_function=lambda _f: {"color": "yellow", "weight": 2, "fillOpacity": 0.1},
+                        ).add_to(fmap)
+
+                    map_state = st_folium(
+                        fmap, height=350, width=None,
+                        returned_objects=["all_drawings"],
+                        key="offset_aoi_map",
+                    )
+
+                    drawings = (map_state or {}).get("all_drawings") or []
+                    btn_a, btn_b = st.columns(2)
+                    with btn_a:
+                        if st.button("Apply AOI", type="primary", use_container_width=True, disabled=not drawings):
+                            features = []
+                            for d in drawings:
+                                if d.get("type") == "Feature":
+                                    features.append(d)
+                                else:
+                                    features.append({"type": "Feature", "properties": {}, "geometry": d})
+                            new_geojson = {"type": "FeatureCollection", "features": features}
+                            try:
+                                new_gdf = geojson_to_gdf(new_geojson)
+                                st.session_state.offset_aoi_geojson = new_geojson
+                                st.session_state.offset_aoi_gdf = new_gdf
+                                st.session_state.data_version += 1
+                                st.success("AOI applied.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Could not apply AOI: {e}")
+                    with btn_b:
+                        if st.button("Clear AOI", use_container_width=True,
+                                     disabled=st.session_state.offset_aoi_gdf is None):
+                            st.session_state.offset_aoi_geojson = None
+                            st.session_state.offset_aoi_gdf = None
+                            st.session_state.data_version += 1
+                            st.rerun()
+
+                    if st.session_state.offset_aoi_gdf is not None:
+                        st.caption("✅ AOI active — offsets restricted to drawn polygon.")
+                    else:
+                        st.caption("Draw a polygon or rectangle, then click **Apply AOI**.")
+
             max_well_age = st.slider(
                 "Max well age for type curve (years)", 1, 10,
                 DEFAULT_MAX_WELL_AGE_YR, 1,
