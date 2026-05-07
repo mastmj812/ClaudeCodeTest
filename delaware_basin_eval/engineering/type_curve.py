@@ -27,6 +27,8 @@ def get_offset_wells(
     max_well_age_yr: int,
     section_apis: set | None = None,
     aoi_gdf=None,
+    min_lateral_ft: float | None = None,
+    max_lateral_ft: float | None = None,
 ) -> pd.DataFrame:
     """
     Filter wells_df to offset type-curve candidates:
@@ -35,10 +37,16 @@ def get_offset_wells(
       - Inside the offset AOI (drawn polygon if aoi_gdf given,
         else within radius_miles of center_lat/center_lon)
       - Not in section_apis (exclude in-section wells from comps)
-      - Has a valid lateral_length >= MIN_LATERAL_FT
+      - Lateral length within [min_lateral_ft, max_lateral_ft]
+        (defaults: MIN_LATERAL_FT and unbounded)
     """
     from config import MIN_LATERAL_FT
     from utils.geo import wells_in_polygon
+
+    if min_lateral_ft is None:
+        min_lateral_ft = MIN_LATERAL_FT
+    if max_lateral_ft is None:
+        max_lateral_ft = float("inf")
 
     df = wells_df.copy()
     counts = {"total": len(df)}
@@ -56,7 +64,8 @@ def get_offset_wells(
     counts["after_section_exclude"] = len(df)
 
     if "lateral_length" in df.columns:
-        df = df[df["lateral_length"].fillna(0) >= MIN_LATERAL_FT]
+        lat_ft = df["lateral_length"].fillna(0)
+        df = df[(lat_ft >= min_lateral_ft) & (lat_ft <= max_lateral_ft)]
     counts["after_lateral"] = len(df)
 
     valid = df.dropna(subset=["latitude", "longitude"])

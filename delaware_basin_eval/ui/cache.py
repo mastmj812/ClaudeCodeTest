@@ -59,15 +59,23 @@ def formation_well_counts(
     radius_miles: float,
     max_well_age_yr: int,
     section_apis_tuple: tuple,
+    min_lateral_ft: float = 0.0,
+    max_lateral_ft: float = 0.0,
 ) -> dict:
     """
     Return {canonical_formation: qualifying_well_count} across all formations
     in the offset AOI (drawn polygon if present, else radius circle). Uses
     the same filter criteria as get_offset_wells().
+
+    min_lateral_ft / max_lateral_ft = 0 means "use defaults" (MIN_LATERAL_FT
+    and unbounded). Non-zero values become hard bounds.
     """
     from engineering.type_curve import get_offset_wells
     wells_df = st.session_state.wells_df
     aoi_gdf = st.session_state.get("offset_aoi_gdf")
+
+    min_lat = min_lateral_ft if min_lateral_ft > 0 else None
+    max_lat = max_lateral_ft if max_lateral_ft > 0 else None
 
     section_apis = set(section_apis_tuple)
     counts = {}
@@ -75,6 +83,7 @@ def formation_well_counts(
         offsets = get_offset_wells(
             wells_df, [formation], center_lat, center_lon,
             radius_miles, max_well_age_yr, section_apis, aoi_gdf=aoi_gdf,
+            min_lateral_ft=min_lat, max_lateral_ft=max_lat,
         )
         if len(offsets) > 0:
             counts[formation] = len(offsets)
@@ -89,14 +98,25 @@ def type_curve(
     radius_miles: float, max_well_age_yr: int,
     section_apis_tuple: tuple,
     formation_names_tuple: tuple,
+    min_lateral_ft: float = 0.0,
+    max_lateral_ft: float = 0.0,
 ):
-    """Cache type curve per formation + filter settings."""
+    """Cache type curve per formation + filter settings.
+
+    min_lateral_ft / max_lateral_ft = 0 means "use defaults" (MIN_LATERAL_FT
+    and unbounded). Non-zero values become hard bounds.
+    """
     from engineering.type_curve import get_offset_wells, build_type_curve
     wells_df = st.session_state.wells_df
     prod_df  = st.session_state.prod_df
     aoi_gdf = st.session_state.get("offset_aoi_gdf")
+
+    min_lat = min_lateral_ft if min_lateral_ft > 0 else None
+    max_lat = max_lateral_ft if max_lateral_ft > 0 else None
+
     offsets = get_offset_wells(
         wells_df, list(formation_names_tuple), center_lat, center_lon,
         radius_miles, max_well_age_yr, set(section_apis_tuple), aoi_gdf=aoi_gdf,
+        min_lateral_ft=min_lat, max_lateral_ft=max_lat,
     )
     return build_type_curve(offsets, prod_df), offsets

@@ -125,6 +125,8 @@ def render():
                     cfg["offset_radius_mi"], cfg["max_well_age_yr"],
                     tuple(sorted(section_apis)),
                     tuple(sorted(fnames)),
+                    min_lateral_ft=float(cfg.get("min_lateral_ft", 0) or 0),
+                    max_lateral_ft=float(cfg.get("max_lateral_ft", 0) or 0),
                 )
 
                 if tc["n_wells"] == 0:
@@ -258,6 +260,8 @@ def render():
                             _dv, fm2, _clat, _clon,
                             alt_cfg["offset_radius_mi"], alt_cfg["max_well_age_yr"],
                             _apis_t, tuple(sorted(fn2)),
+                            min_lateral_ft=float(alt_cfg.get("min_lateral_ft", 0) or 0),
+                            max_lateral_ft=float(alt_cfg.get("max_lateral_ft", 0) or 0),
                         )
                         if tc2["n_wells"] == 0:
                             continue

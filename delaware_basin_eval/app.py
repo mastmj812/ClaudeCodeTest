@@ -16,7 +16,10 @@ from config import (
     DEFAULT_LOE_WATER_PER_BBL, DEFAULT_LOE_FIXED_PER_MO,
     DEFAULT_WOR, DEFAULT_DISCOUNT_RATE, DEFAULT_WELLS_PER_SECTION,
     DEFAULT_OFFSET_RADIUS_MI, DEFAULT_MAX_WELL_AGE_YR, FORMATIONS,
+    MIN_LATERAL_FT,
 )
+
+DEFAULT_MAX_LATERAL_FT = 25_000  # upper cap for the offset-filter range slider
 
 
 try:
@@ -412,6 +415,19 @@ with st.sidebar:
                 DEFAULT_MAX_WELL_AGE_YR, 1,
             )
 
+            lateral_min, lateral_max = st.slider(
+                "Lateral length range (ft)",
+                min_value=1_000, max_value=DEFAULT_MAX_LATERAL_FT,
+                value=(int(MIN_LATERAL_FT), DEFAULT_MAX_LATERAL_FT),
+                step=500,
+                help=(
+                    "Offset wells outside this range are excluded from the type-curve "
+                    "comp set. Short laterals (≪10k ft) and very long laterals (≫10k ft) "
+                    "don't normalize linearly to the 10,000-ft basis. Map display is "
+                    "unaffected — this only filters the comp set."
+                ),
+            )
+
     # 5. Price deck
     if st.session_state.section_wells is not None:
         with st.expander("💲 5. Price Deck"):
@@ -495,6 +511,8 @@ with st.sidebar:
                 "wells_per_section": wells_per_section,
                 "offset_radius_mi": offset_radius,
                 "max_well_age_yr":  max_well_age,
+                "min_lateral_ft":   lateral_min,
+                "max_lateral_ft":   lateral_max,
             }
         except NameError:
             pass  # sidebar widgets not yet rendered

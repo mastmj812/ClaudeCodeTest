@@ -315,6 +315,8 @@ def render():
             well_counts = cache.formation_well_counts(
                 _data_version, center_lat, center_lon,
                 cfg["offset_radius_mi"], cfg["max_well_age_yr"], _section_apis_t,
+                min_lateral_ft=float(cfg.get("min_lateral_ft", 0) or 0),
+                max_lateral_ft=float(cfg.get("max_lateral_ft", 0) or 0),
             )
         bar_fig = formation_well_count_chart(well_counts)
         if HAS_PLOTLY_EVENTS and well_counts:
@@ -345,14 +347,17 @@ def render():
                 selected_formation, center_lat, center_lon,
                 cfg["offset_radius_mi"], cfg["max_well_age_yr"],
                 _section_apis_t, tuple(sorted(effective_fnames)),
+                min_lateral_ft=float(cfg.get("min_lateral_ft", 0) or 0),
+                max_lateral_ft=float(cfg.get("max_lateral_ft", 0) or 0),
             )
 
     if not effective_fnames:
         st.info("Select at least one formation name in the comp set to build a type curve.")
     elif tc is not None and tc["n_wells"] == 0:
         st.warning(
-            f"No qualifying offset wells found for {selected_formation} within "
-            f"{cfg['offset_radius_mi']} miles. Try increasing the radius or max well age."
+            f"No qualifying offset wells found for {selected_formation}. "
+            f"Try widening the radius / AOI, increasing max well age, "
+            f"or loosening the lateral length range."
         )
         fc = offsets.attrs.get("filter_counts", {}) if offsets is not None else {}
         if fc:
