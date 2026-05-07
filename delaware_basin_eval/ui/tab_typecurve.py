@@ -232,6 +232,13 @@ def render():
     extra = [f for f in all_data_formations if f not in FORMATIONS]
     formation_options = FORMATIONS + extra
 
+    # Promote a pending click on the formation bar chart into the selectbox's
+    # widget key — must happen BEFORE the selectbox is instantiated, since
+    # Streamlit forbids mutating a widget-bound session_state key after render.
+    pending = st.session_state.pop("selected_formation_tab3_intent", None)
+    if pending and pending in formation_options:
+        st.session_state.selected_formation_tab3 = pending
+
     valid_sw = section_wells.dropna(subset=["latitude", "longitude"])
     if valid_sw.empty:
         st.warning(
@@ -320,7 +327,11 @@ def render():
             if clicks:
                 clicked = clicks[0].get("y")
                 if clicked and clicked != selected_formation and clicked in formation_options:
-                    st.session_state.selected_formation_tab3 = clicked
+                    # Stash the click as an "intent" — the top of the next run
+                    # promotes it into the selectbox's widget key. Setting the
+                    # widget key directly here would raise StreamlitAPIException
+                    # because the selectbox above has already been instantiated.
+                    st.session_state.selected_formation_tab3_intent = clicked
                     st.rerun()
         else:
             st.plotly_chart(bar_fig, use_container_width=True)
