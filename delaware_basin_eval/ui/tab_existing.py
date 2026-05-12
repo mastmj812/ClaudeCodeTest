@@ -32,6 +32,13 @@ def render():
 
     overrides = st.session_state.well_params_override
 
+    # Per-well WI/NRI lookup from section_wells; falls back to cfg defaults via
+    # build_existing_well_cashflow when the value is NaN.
+    wi_by_api  = (section_wells.set_index("api")["wi"].to_dict()
+                  if "wi"  in section_wells.columns else {})
+    nri_by_api = (section_wells.set_index("api")["nri"].to_dict()
+                  if "nri" in section_wells.columns else {})
+
     econ_rows = []
     well_plot_data = []
     all_cashflows = []
@@ -51,7 +58,11 @@ def render():
                    "success": True}
 
         if res["success"] and not wprod.empty:
-            cf, cf_warnings = build_existing_well_cashflow(res, wprod, cfg)
+            cf, cf_warnings = build_existing_well_cashflow(
+                res, wprod, cfg,
+                wi=wi_by_api.get(api),
+                nri=nri_by_api.get(api),
+            )
             econ = well_economics(cf, cfg["discount_rate"])
             all_cashflows.append(cf)
             if "default_gor" in cf_warnings:

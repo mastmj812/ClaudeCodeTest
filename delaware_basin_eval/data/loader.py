@@ -41,6 +41,11 @@ WELL_CANONICAL = {
     "survey":         ["survey", "survey name"],
     "status":         ["well status", "status", "well_status"],
     "well_type":      ["well type", "welltype", "well_type"],
+    # Per-well economic interest. Optional — usually absent from Enverus exports
+    # but can be supplied by the user. NaN means "use cfg default".
+    "wi":             ["wi", "working interest", "working_interest", "wi (%)", "wi_pct"],
+    "nri":            ["nri", "net revenue interest", "net_revenue_interest",
+                       "nri (%)", "nri_pct"],
 }
 
 PROD_CANONICAL = {
@@ -121,6 +126,14 @@ def load_well_header(file) -> pd.DataFrame:
                 "latitude", "longitude", "latitude_bh", "longitude_bh"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Interest fractions: accept either decimals (0.75) or percentages (75) and
+    # normalize to decimals. If max > 1.5 we assume the column was entered as %.
+    for col in ["wi", "nri"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+            if df[col].notna().any() and df[col].max(skipna=True) > 1.5:
+                df[col] = df[col] / 100.0
 
     # Add missing columns as NaN so downstream code doesn't need to guard
     for col in WELL_CANONICAL:

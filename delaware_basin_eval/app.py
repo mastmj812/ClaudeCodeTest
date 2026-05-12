@@ -439,7 +439,16 @@ with st.sidebar:
     # 6. Revenue deductions
     if st.session_state.section_wells is not None:
         with st.expander("📉 6. Revenue Deductions"):
-            nri            = st.slider("NRI", 0.60, 0.90, float(DEFAULT_DEDUCTIONS["nri"]), 0.01)
+            wi             = st.slider(
+                "Default WI", 0.10, 1.00, 1.00, 0.01,
+                help="Working interest used when a well has no per-well WI set. "
+                     "Scales LOE and D&C costs. Per-well overrides in Tab 1 take precedence.",
+            )
+            nri            = st.slider(
+                "Default NRI", 0.50, 1.00, float(DEFAULT_DEDUCTIONS["nri"]), 0.01,
+                help="Net revenue interest used when a well has no per-well NRI set. "
+                     "Per-well overrides in Tab 1 take precedence.",
+            )
             oil_sev        = st.number_input("Oil severance (%)",
                                              value=DEFAULT_DEDUCTIONS["oil_severance"] * 100, step=0.1) / 100
             gas_sev        = st.number_input("Gas severance (%)",
@@ -496,6 +505,7 @@ with st.sidebar:
                 "gas_price":        gas_price,
                 "ngl_yield":        ngl_yield,
                 "ngl_price":        ngl_price,
+                "wi":               wi,
                 "nri":              nri,
                 "oil_severance":    oil_sev,
                 "gas_severance":    gas_sev,

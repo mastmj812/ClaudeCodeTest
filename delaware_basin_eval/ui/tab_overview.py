@@ -72,22 +72,28 @@ def render():
 
     st.markdown("#### Well Inventory")
     st.caption(
-        "Uncheck **Include** for any well whose lateral runs off the acreage "
-        "of interest, then click **Apply selection** to remove it from the section."
+        "Uncheck **Include** to drop a well from the section. "
+        "Edit **WI** / **NRI** to override the sidebar defaults for that well (leave blank to use defaults). "
+        "Click **Apply changes** to commit."
     )
 
-    display_cols = [c for c in
+    readonly_cols = [c for c in
         ["well_name", "api", "formation", "lateral_length", "first_prod_date", "operator", "status"]
         if c in section_wells.columns]
 
-    editor_df = section_wells[display_cols].copy()
+    editor_df = section_wells[readonly_cols].copy()
     editor_df.insert(0, "Include", True)
+    editor_df["WI"]  = section_wells["wi"]  if "wi"  in section_wells.columns else float("nan")
+    editor_df["NRI"] = section_wells["nri"] if "nri" in section_wells.columns else float("nan")
+
+    cfg_wi  = float(cfg.get("wi",  1.00)) if cfg else 1.00
+    cfg_nri = float(cfg.get("nri", 0.75)) if cfg else 0.75
 
     edited = st.data_editor(
         editor_df,
         use_container_width=True,
         hide_index=True,
-        disabled=display_cols,
+        disabled=readonly_cols,
         column_config={
             "Include": st.column_config.CheckboxColumn(
                 "Include", default=True,
@@ -100,21 +106,49 @@ def render():
             "first_prod_date": st.column_config.DateColumn("First Prod"),
             "operator":        st.column_config.TextColumn("Operator"),
             "status":          st.column_config.TextColumn("Status"),
+            "WI": st.column_config.NumberColumn(
+                "WI", format="%.4f", min_value=0.0, max_value=1.0, step=0.0001,
+                help=f"Working interest (0–1). Blank → default {cfg_wi:.2f}.",
+            ),
+            "NRI": st.column_config.NumberColumn(
+                "NRI", format="%.4f", min_value=0.0, max_value=1.0, step=0.0001,
+                help=f"Net revenue interest (0–1). Blank → default {cfg_nri:.2f}.",
+            ),
         },
         key=f"section_well_editor_v{st.session_state.data_version}",
     )
 
+    import numpy as _np
+    orig_wi  = section_wells["wi"]  if "wi"  in section_wells.columns else None
+    orig_nri = section_wells["nri"] if "nri" in section_wells.columns else None
+    edited_wi  = edited["WI"]
+    edited_nri = edited["NRI"]
+
+    def _series_differs(a, b) -> bool:
+        if a is None:
+            return b.notna().any()
+        # Treat NaN==NaN as equal
+        return not a.fillna(_np.inf).equals(b.fillna(_np.inf))
+
+    interest_changed = _series_differs(orig_wi, edited_wi) or _series_differs(orig_nri, edited_nri)
     n_excluded = int((~edited["Include"]).sum())
-    if n_excluded > 0:
-        plural = "s" if n_excluded != 1 else ""
-        if st.button(
-            f"Apply selection (remove {n_excluded} well{plural})",
-            type="primary",
-        ):
-            keep_apis = set(section_wells.loc[edited["Include"].values, "api"])
-            st.session_state.section_wells = (
-                section_wells[section_wells["api"].isin(keep_apis)].reset_index(drop=True)
-            )
+
+    if n_excluded > 0 or interest_changed:
+        bits = []
+        if n_excluded > 0:
+            plural = "s" if n_excluded != 1 else ""
+            bits.append(f"remove {n_excluded} well{plural}")
+        if interest_changed:
+            bits.append("update WI/NRI")
+        label = "Apply changes (" + " · ".join(bits) + ")"
+        if st.button(label, type="primary"):
+            keep_mask = edited["Include"].values
+            keep_apis = set(section_wells.loc[keep_mask, "api"])
+            updated = section_wells.copy()
+            updated["wi"]  = edited_wi.values
+            updated["nri"] = edited_nri.values
+            updated = updated[updated["api"].isin(keep_apis)].reset_index(drop=True)
+            st.session_state.section_wells = updated
             if st.session_state.section_prod is not None:
                 st.session_state.section_prod = st.session_state.section_prod[
                     st.session_state.section_prod["api"].isin(keep_apis)

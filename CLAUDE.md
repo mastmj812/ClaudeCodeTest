@@ -49,8 +49,8 @@ data_cache/             # Gitignored — saved directional surveys CSV + heels.p
 **Formation handling:** all formation names flow through `config.FORMATIONS` (canonical list) and `config.FORMATION_ALIASES`. Never hardcode formation strings elsewhere — the user maps raw Enverus values to canonical names via the sidebar, and downstream modules read the mapped values from session state.
 
 **Session state contract** (`st.session_state` keys set by `app._init_state`):
-- `wells_df`, `prod_df` — full loaded datasets (wells_df includes optional `latitude_bh`/`longitude_bh` columns)
-- `section_wells`, `section_prod` — filtered to the area of interest; `section_wells` can be further trimmed by the per-well include/exclude editor on Tab 1
+- `wells_df`, `prod_df` — full loaded datasets (wells_df includes optional `latitude_bh`/`longitude_bh`, `wi`, `nri` columns)
+- `section_wells`, `section_prod` — filtered to the area of interest; `section_wells` can be further trimmed and have its `wi`/`nri` per-well values edited by the Tab 1 editor
 - `formation_mapping` — `{raw_name: canonical_name}` from the mapping UI
 - `tc_params` — `{formation: {oil|gas|water: {qi, di_annual, b, dt_annual, ramp_months, q_ramp}}}`. First-time defaults: `ramp_months=1`, `q_ramp=P50[0]`, `b=1.0`
 - `well_params_override` — per-API decline overrides `{api: {qi, di_annual, b}}`
@@ -77,6 +77,11 @@ data_cache/             # Gitignored — saved directional surveys CSV + heels.p
 - User uploads the surveys CSV in sidebar section 2b; it's saved to `data_cache/directional_surveys.csv` so subsequent sessions auto-detect it.
 - `ensure_heels_for(apis)` is called from `tab_overview.py` and `tab_typecurve.py` immediately before the section_map is rendered. It checks `data_cache/heels.parquet` for cached heels and only reads the surveys CSV (chunked, with a column subset) for APIs not yet cached.
 - Heel definition: first survey station (sorted by `MeasuredDepth_FT`) with `Inclination_DEG >= 80.0` AND `CoordinateSource == "ACTUAL"`. API_UWI hyphens are stripped and the result zero-padded to 14 to match `data.loader._standardize_api`.
+
+**Per-well WI/NRI:**
+- Loader recognizes optional `wi` and `nri` columns on the wells CSV (decimals or percentages — values > 1.5 are interpreted as percent and divided by 100).
+- The sidebar §6 holds the *default* WI/NRI used when a well has no per-well value (`cfg["wi"]`, `cfg["nri"]`). Tab 1's editor lets the user override per-well — saved values persist on `section_wells` and bump `data_version`.
+- `build_existing_well_cashflow` and `build_undrilled_well_cashflow` accept `wi=` and `nri=` kwargs. Existing wells pass their per-well values; undrilled wells keep using cfg defaults (no per-well data for hypothetical locations). WI scales LOE and D&C capex; NRI scales gross revenue via `calc_monthly_revenue`'s `nri=` kwarg.
 
 **Type curve tab (Tab 3) layout:**
 - Rate-vs-month and cumulative-vs-month charts render side-by-side per phase (oil, gas, water stacked vertically).
