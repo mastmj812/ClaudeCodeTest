@@ -91,7 +91,7 @@ FORMATION_ALIASES: dict[str, str] = {
 # ── Default price deck ─────────────────────────────────────────────────────
 DEFAULT_PRICE_DECK = {
     "oil_price": 70.00,       # $/BBL
-    "gas_price": 2.50,        # $/MMBTU
+    "gas_price": 2.50,        # $/MCF (no BTU heating-value factor)
     "ngl_yield": 25.0,        # BBL/MMCF
     "ngl_price": 22.00,       # $/BBL
 }

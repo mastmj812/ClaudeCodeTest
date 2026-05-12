@@ -8,7 +8,7 @@ from ui import cache
 from ui.charts import npv_waterfall, tornado_chart
 from engineering.spacing import remaining_locations
 from engineering.type_curve import generate_type_curve_profile
-from economics.cashflow import build_undrilled_well_cashflow
+from economics.cashflow import build_undrilled_well_cashflow, DC_FALLBACK_MM
 from economics.metrics import well_economics, portfolio_irr
 
 
@@ -36,7 +36,8 @@ def _build_tc_params(formation: str, tc: dict) -> dict:
 
 
 def _undrilled_well_cf(tc_p: dict, alt_cfg: dict, formation: str):
-    """Generate the 3-stream profiles, build cashflow for one undrilled well."""
+    """Generate the 3-stream profiles, build cashflow for one undrilled well.
+    Returns (cashflow_array, warnings_list)."""
     oil   = generate_type_curve_profile(tc_p["oil"],   600)
     gas   = generate_type_curve_profile(tc_p["gas"],   600)
     water = generate_type_curve_profile(tc_p["water"], 600)
@@ -101,6 +102,7 @@ def render():
             econ_rows = []
             formation_npvs = {}
             all_undrilled_cf = []
+            dc_fallback_formations: list[str] = []
 
             for _, row in rem_df.iterrows():
                 formation   = row["Formation"]
@@ -140,7 +142,9 @@ def render():
                     continue
 
                 tc_p = _build_tc_params(formation, tc)
-                cf_one = _undrilled_well_cf(tc_p, cfg, formation)
+                cf_one, cf_warnings = _undrilled_well_cf(tc_p, cfg, formation)
+                if any(w.startswith("dc_fallback:") for w in cf_warnings):
+                    dc_fallback_formations.append(formation)
                 econ   = well_economics(cf_one, cfg["discount_rate"])
 
                 npv_val  = econ["npv"]  if (econ["npv"]  is not None and np.isfinite(econ["npv"]))  else None
@@ -162,6 +166,14 @@ def render():
                     "PV10/Well ($MM)":  round(pv10_val / 1e6, 2) if pv10_val is not None else None,
                     "Total NPV ($MM)":  round(total_npv / 1e6, 2),
                 })
+
+        if dc_fallback_formations:
+            unique_fb = sorted(set(dc_fallback_formations))
+            st.warning(
+                f"D&C cost not configured for: **{', '.join(unique_fb)}** — using "
+                f"${DC_FALLBACK_MM:.1f}MM/well fallback. Add these formations to "
+                f"`DEFAULT_DC_COSTS` in config.py for accurate economics."
+            )
 
         total_undrilled_npv  = sum(v for v in formation_npvs.values() if np.isfinite(v))
         total_undrilled_pv10 = sum(
@@ -273,7 +285,7 @@ def render():
                                 "gas":   {**sp2.get("gas",   {}), "ramp_months": 1, "q_ramp": _safe_first(tc2.get("gas_p50"))},
                                 "water": {**sp2.get("water", {}), "ramp_months": 1, "q_ramp": _safe_first(tc2.get("water_p50"))},
                             }
-                        cf2 = _undrilled_well_cf(tc_p2, alt_cfg, fm2)
+                        cf2, _ = _undrilled_well_cf(tc_p2, alt_cfg, fm2)
                         e2  = well_economics(cf2, alt_cfg["discount_rate"])
                         v2  = e2["npv"]
                         if v2 is not None and np.isfinite(v2):

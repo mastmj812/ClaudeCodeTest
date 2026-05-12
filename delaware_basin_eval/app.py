@@ -432,7 +432,7 @@ with st.sidebar:
     if st.session_state.section_wells is not None:
         with st.expander("💲 5. Price Deck"):
             oil_price  = st.number_input("Oil ($/BBL)",    value=DEFAULT_PRICE_DECK["oil_price"],  step=1.0)
-            gas_price  = st.number_input("Gas ($/MMBTU)",  value=DEFAULT_PRICE_DECK["gas_price"],  step=0.10)
+            gas_price  = st.number_input("Gas ($/MCF)",    value=DEFAULT_PRICE_DECK["gas_price"],  step=0.10)
             ngl_yield  = st.number_input("NGL yield (BBL/MMCF)", value=DEFAULT_PRICE_DECK["ngl_yield"], step=1.0)
             ngl_price  = st.number_input("NGL ($/BBL)",    value=DEFAULT_PRICE_DECK["ngl_price"],  step=1.0)
 

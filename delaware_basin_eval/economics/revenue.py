@@ -28,9 +28,7 @@ def calc_monthly_revenue(
     ngl_bbl = gas_mcf * cfg["ngl_yield"] / 1000.0  # MCF → MMCF × yield
 
     gross_oil = oil_bbl * cfg["oil_price"]
-    gross_gas = gas_mcf * cfg["gas_price"] / 1000.0 * 1e3  # MCF × $/MMBTU × (1 MMBTU/MCF approx)
-    # More precisely: gas_mcf × (1 MMBTU/MCF) × gas_price; 1 MCF ≈ 1 MMBTU for dry gas
-    gross_gas = gas_mcf * cfg["gas_price"]           # MCF × $/MCF (treating $/MMBTU ≈ $/MCF)
+    gross_gas = gas_mcf * cfg["gas_price"]  # gas_price is $/MCF (no BTU factor applied)
     gross_ngl = ngl_bbl * cfg["ngl_price"]
 
     gross_total = (gross_oil + gross_gas + gross_ngl) * cfg["nri"]

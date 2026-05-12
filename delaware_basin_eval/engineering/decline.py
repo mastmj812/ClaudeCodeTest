@@ -284,14 +284,20 @@ def generate_stream_profile(
     if b > 0 and Di_monthly > terminal_Di_monthly:
         t_switch = (Di_monthly / terminal_Di_monthly - 1.0) / (b * Di_monthly)
 
+    # ramp_months <= 1 means no ramp: the very first month is qi and decline
+    # starts immediately. ramp_months >= 2 linearly interpolates q_ramp → qi
+    # over months [0, ramp_months-1], then decline kicks in at month ramp_months.
+    eff_ramp = max(int(ramp_months), 1)
+
     volumes = []
-    decline_t = 0.0  # time within the decline segment (starts after ramp)
+    decline_t = 0.0
 
     for month in range(n_months):
-        if month < ramp_months:
-            # Linear ramp: q_ramp at month 0, qi at month (ramp_months-1)
-            frac = month / max(ramp_months - 1, 1)
+        if eff_ramp > 1 and month < eff_ramp:
+            frac = month / (eff_ramp - 1)
             rate = q_ramp + (qi - q_ramp) * frac
+        elif eff_ramp == 1 and month == 0:
+            rate = qi
         else:
             decline_t += 1.0
             if decline_t <= t_switch:

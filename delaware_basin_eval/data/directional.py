@@ -96,7 +96,18 @@ def _read_cache(cache_path: Path) -> dict[str, tuple[float, float]]:
             r["api"]: (float(r["heel_lat"]), float(r["heel_lon"]))
             for _, r in df.iterrows()
         }
-    except Exception:
+    except Exception as exc:
+        # Surface in the UI if we're inside Streamlit; otherwise just print.
+        # Either way, return {} so callers fall back to a fresh CSV scan.
+        msg = (
+            f"Heels cache at {cache_path} could not be read ({exc.__class__.__name__}: {exc}) — "
+            f"re-extracting from the surveys CSV. Delete the file if this persists."
+        )
+        try:
+            import streamlit as st
+            st.warning(msg)
+        except Exception:
+            print(msg)
         return {}
 
 
