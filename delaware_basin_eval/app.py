@@ -87,6 +87,10 @@ def _init_state():
         "dir_surveys_path": None,
         # extracted heel coords {api: (heel_lat, heel_lon)} — populated lazily
         "heels": {},
+        # APIs already attempted (set). Includes both heel-found and no-heel
+        # results, so we don't re-scan the 200MB+ surveys CSV every rerun for
+        # APIs that simply don't have heels.
+        "heels_scanned": set(),
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -232,6 +236,7 @@ with st.sidebar:
                     (cache_dir / "heels.parquet").unlink(missing_ok=True)
                     st.session_state.dir_surveys_path = str(dest)
                     st.session_state.heels = {}
+                    st.session_state.heels_scanned = set()
                     st.session_state.data_version += 1
                     st.success(f"Saved ({dest.stat().st_size / 1e6:.1f} MB). Heels will rebuild on demand.")
                     st.rerun()
@@ -240,6 +245,7 @@ with st.sidebar:
                 if st.button("Clear surveys", use_container_width=True):
                     st.session_state.dir_surveys_path = None
                     st.session_state.heels = {}
+                    st.session_state.heels_scanned = set()
                     from pathlib import Path
                     (Path("data_cache") / "directional_surveys.csv").unlink(missing_ok=True)
                     (Path("data_cache") / "heels.parquet").unlink(missing_ok=True)
