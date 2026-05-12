@@ -72,10 +72,12 @@ data_cache/             # Gitignored — saved directional surveys CSV + heels.p
 - Each well is drawn as a line segment from start→bottom-hole.
 - Start point preference: `heel` if the well has `latitude_heel`/`longitude_heel` (extracted from directional surveys), else `surface`.
 - Wells without BH coords render only as a marker.
+- `_lateral_line_coords` is vectorized — never `iterrows` on offset wells.
 
 **Directional surveys / heel extraction** (`data/directional.py`):
 - User uploads the surveys CSV in sidebar section 2b; it's saved to `data_cache/directional_surveys.csv` so subsequent sessions auto-detect it.
-- `ensure_heels_for(apis)` is called from `tab_overview.py` and `tab_typecurve.py` immediately before the section_map is rendered. It checks `data_cache/heels.parquet` for cached heels and only reads the surveys CSV (chunked, with a column subset) for APIs not yet cached.
+- `ensure_heels_for(apis)` is called from `tab_overview.py` and `tab_typecurve.py` immediately before the section_map is rendered. **Only section_wells APIs are passed** — offset wells are intentionally excluded so radius/AOI changes don't keep forcing fresh CSV passes (offsets fall back to surface→BH in `_lateral_line_coords`).
+- `heels.parquet` records *every* API that's been scanned — including those with no heel (NaN coords) — so subsequent calls short-circuit instead of re-reading the surveys CSV for APIs that were never going to yield a heel. `session_state.heels_scanned` mirrors this in-memory.
 - Heel definition: first survey station (sorted by `MeasuredDepth_FT`) with `Inclination_DEG >= 80.0` AND `CoordinateSource == "ACTUAL"`. API_UWI hyphens are stripped and the result zero-padded to 14 to match `data.loader._standardize_api`.
 
 **Per-well WI/NRI:**

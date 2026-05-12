@@ -43,12 +43,13 @@ def render():
         except Exception:
             offset_wells = None
 
-    # Lazily extract heel coords for the wells we're about to draw (no-op if no
-    # directional surveys uploaded). Falls back to surface→BH for missing APIs.
+    # Lazily extract heel coords for the *section* wells only. Offset wells
+    # change every time the radius/AOI is edited, so including them here makes
+    # every Offset Filter tweak force a fresh 200MB+ surveys CSV pass. Offsets
+    # render as surface→BH (the existing fallback in _lateral_line_coords),
+    # which is fine for visual context.
     from data.directional import ensure_heels_for
     needed_apis = set(section_wells["api"])
-    if offset_wells is not None and not offset_wells.empty:
-        needed_apis |= set(offset_wells["api"])
     if st.session_state.get("dir_surveys_path") and needed_apis:
         with st.spinner("Loading heel coordinates from directional surveys…"):
             heels = ensure_heels_for(needed_apis)

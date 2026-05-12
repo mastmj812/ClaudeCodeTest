@@ -67,24 +67,46 @@ def _lateral_line_coords(grp: pd.DataFrame) -> tuple[list, list]:
     (`latitude_heel`/`longitude_heel`) are present (more accurate — the
     stick spans only the horizontal lateral). Otherwise falls back to
     surface→BH. Wells without BH coords contribute nothing.
+
+    Vectorized — `iterrows` was the hot loop on map redraws when offset
+    wells numbered in the hundreds.
     """
-    if "latitude_bh" not in grp.columns or "longitude_bh" not in grp.columns:
+    if "latitude_bh" not in grp.columns or "longitude_bh" not in grp.columns or grp.empty:
         return [], []
-    has_heel = (
-        "latitude_heel"  in grp.columns
-        and "longitude_heel" in grp.columns
-    )
-    lats: list = []
-    lons: list = []
-    for _, w in grp.iterrows():
-        if not (pd.notna(w.get("latitude_bh")) and pd.notna(w.get("longitude_bh"))):
-            continue
-        if has_heel and pd.notna(w.get("latitude_heel")) and pd.notna(w.get("longitude_heel")):
-            start_lat, start_lon = w["latitude_heel"], w["longitude_heel"]
-        else:
-            start_lat, start_lon = w["latitude"], w["longitude"]
-        lats.extend([start_lat, w["latitude_bh"], None])
-        lons.extend([start_lon, w["longitude_bh"], None])
+
+    bh_lat = grp["latitude_bh"]
+    bh_lon = grp["longitude_bh"]
+    has_bh = bh_lat.notna() & bh_lon.notna()
+    if not has_bh.any():
+        return [], []
+
+    # Start point: heel if available, otherwise surface.
+    surf_lat = grp["latitude"]
+    surf_lon = grp["longitude"]
+    if "latitude_heel" in grp.columns and "longitude_heel" in grp.columns:
+        heel_lat = grp["latitude_heel"]
+        heel_lon = grp["longitude_heel"]
+        start_lat = heel_lat.where(heel_lat.notna() & heel_lon.notna(), surf_lat)
+        start_lon = heel_lon.where(heel_lat.notna() & heel_lon.notna(), surf_lon)
+    else:
+        start_lat = surf_lat
+        start_lon = surf_lon
+
+    # Keep only wells with BH coords (start point falls back to surface, which
+    # is required anyway for rows where heel was missing).
+    start_lat = start_lat[has_bh].to_numpy(dtype=float)
+    start_lon = start_lon[has_bh].to_numpy(dtype=float)
+    end_lat   = bh_lat[has_bh].to_numpy(dtype=float)
+    end_lon   = bh_lon[has_bh].to_numpy(dtype=float)
+
+    n = len(start_lat)
+    lats: list = [None] * (3 * n)
+    lons: list = [None] * (3 * n)
+    lats[0::3] = start_lat.tolist()
+    lats[1::3] = end_lat.tolist()
+    # lats[2::3] stays None — the per-well separator
+    lons[0::3] = start_lon.tolist()
+    lons[1::3] = end_lon.tolist()
     return lats, lons
 
 

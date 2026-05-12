@@ -289,11 +289,11 @@ def render():
             center_lat, center_lon, cfg["offset_radius_mi"], _section_apis_t,
         )
 
-        # Lazily extract heel coords for the wells we're about to draw
+        # Heels for *section* wells only — see tab_overview.py for why offsets
+        # are excluded (radius/formation switching otherwise forces repeated
+        # full CSV passes). Offsets fall back to surface→BH in section_map.
         from data.directional import ensure_heels_for
         needed_apis = set(section_wells["api"])
-        if not map_offsets.empty:
-            needed_apis |= set(map_offsets["api"])
         if st.session_state.get("dir_surveys_path") and needed_apis:
             with st.spinner("Loading heel coordinates from directional surveys…"):
                 heels = ensure_heels_for(needed_apis)
